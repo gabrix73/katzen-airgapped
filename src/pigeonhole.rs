@@ -402,9 +402,9 @@ impl VaultMailbox {
 
     pub fn add_contact(&mut self, username: &str, box_id_hex: &str) -> Result<ContactProfile, String> {
         let trimmed_hex = box_id_hex.trim();
-        let bytes = hex::decode(trimmed_hex).map_err(|e| format!("Hex non valido: {}", e))?;
+        let bytes = hex::decode(trimmed_hex).map_err(|e| format!("Invalid hex: {}", e))?;
         if bytes.len() != 32 {
-            return Err("Il Box ID del contatto deve essere esattamente di 32 byte (64 caratteri hex)".to_string());
+            return Err("Contact Box ID must be exactly 32 bytes (64 hex characters)".to_string());
         }
         let profile = ContactProfile::new(username, trimmed_hex);
         self.contacts.retain(|c| !c.box_id_hex.eq_ignore_ascii_case(trimmed_hex));

@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 
 /// Partitioned / Grouped layout for Anti-Keylogger Virtual Keyboard
 ///
-/// Requirement:
-/// "disposizione random dei tasti ma senza mescolare lettere, numeri e simboli.
-/// i gruppi devono stare insieme per rendere la digitazione piu facile"
-/// "la tastiera virtuale resta opzionale, ma se utilizzata aumenta il tuo score di segretezza/sicurezza"
+/// Design principle:
+/// Key categories (numbers, letters, symbols) remain partitioned into distinct rows,
+/// but are shuffled within each partition to scramble mouse coordinate telemetry.
+/// Virtual keyboard remains optional, but elevates the secrecy score to 100% (5 stars).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VirtualKeyboardState {
     pub numbers: Vec<char>,
@@ -78,17 +78,17 @@ impl VirtualKeyboardState {
             SecrecyReport {
                 score_percentage: 100,
                 stars: 5,
-                shielding_level: "Quantum Shielding (Massima)".to_string(),
+                shielding_level: "Quantum Shielding (Maximum)".to_string(),
                 keylogger_protection: true,
-                opsec_note: "Tastiera virtuale raggruppata attiva: digitazione protetta da keylogger hardware USB, eavesdropping coordinate fisse e analisi acustica.".to_string(),
+                opsec_note: "Partitioned virtual keyboard active: keystrokes immune to hardware USB keyloggers, pointer coordinate sniffing, and acoustic analysis.".to_string(),
             }
         } else {
             SecrecyReport {
                 score_percentage: 70,
                 stars: 3,
-                shielding_level: "Standard (Isolamento Ambientale)".to_string(),
+                shielding_level: "Standard (Environmental Isolation)".to_string(),
                 keylogger_protection: false,
-                opsec_note: "Digitazione da tastiera fisica rilevata. Suggerimento OPSEC: attiva la tastiera virtuale per aumentare lo score a 5 stelle ⭐⭐⭐⭐⭐ ed eliminare il rischio di keylogger fisici o acustici.".to_string(),
+                opsec_note: "Physical keyboard input detected. OPSEC tip: enable the virtual keyboard for 5-star ⭐⭐⭐⭐⭐ secrecy and protection against hardware sniffers.".to_string(),
             }
         }
     }

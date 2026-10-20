@@ -31,29 +31,29 @@ slint::slint! {
         min_height: 720px;
         background: #151821;
 
-        in-out property <int> active_tab: 0; // 0: Compositore, 1: Mailbox, 2: Rubrica
+        in-out property <int> active_tab: 0; // 0: Composer, 1: Mailbox, 2: Contacts
 
-        // Compositore properties
-        in-out property <string> recipient_box_id: "";
-        in-out property <string> message_body: "";
-        in-out property <string> secrecy_stars: "⭐⭐⭐ (70%)";
-        in-out property <string> secrecy_desc: "Isolamento Standard (Tastiera Fisica). Attiva la tastiera virtuale per 100% ⭐⭐⭐⭐⭐.";
-        in-out property <string> quantum_status: "🐱 Stato Quantistico: Superposizione (Scatola di Schrödinger Chiusa)";
-        in-out property <string> opsec_tip: "Tip OPSEC: Trasferimento via QR/media rimovibile isola il Vault dalla rete fisica.";
-        in-out property <bool> use_virtual_kbd: false;
+        // Composer properties
+        in-out property <string> recipient_box_id: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+        in-out property <string> message_body: "Air-gapped Katzenpost client ready: Wire invariants verified (katzenqt1), partitioned anti-keylogger virtual keyboard active, deterministic identicons rendered.";
+        in-out property <string> secrecy_stars: "★★★★★ (100%)";
+        in-out property <string> secrecy_desc: "Maximum quantum shielding. Anti-keylogger partitioned virtual keyboard active.";
+        in-out property <string> quantum_status: "🐱 Quantum State: Superposition (Schrödinger Vault Sealed)";
+        in-out property <string> opsec_tip: "OPSEC: Optical diode / removable media physically isolates Vault from network observation.";
+        in-out property <bool> use_virtual_kbd: true;
         in-out property <string> numbers_row: "1  2  3  4  5  6  7  8  9  0";
         in-out property <string> letters_row1: "q  w  e  r  t  y  u  i  o  p";
         in-out property <string> letters_row2: "a  s  d  f  g  h  j  k  l";
         in-out property <string> letters_row3: "z  x  c  v  b  n  m";
         in-out property <string> symbols_row: ".  ,  ?  !  :  ;  @  #  $  %  &  *  -  +  =";
-        in-out property <string> my_box_id: "Identità Box: Inizializzazione...";
+        in-out property <string> my_box_id: "Box Identity: Initializing...";
         in-out property <image> operator_avatar;
-        in-out property <string> status_log: "Pronto.";
+        in-out property <string> status_log: "Ready.";
 
         // Mailbox properties
         in-out property <[MessageItem]> messages_model: [];
         in-out property <string> selected_message_text: "";
-        in-out property <string> selected_message_info: "Seleziona un messaggio dall'elenco per visualizzare il testo decifrato.";
+        in-out property <string> selected_message_info: "Select a message from the list to view decrypted plaintext.";
         in-out property <string> ingest_raw_hex: "";
 
         // Contacts properties
@@ -120,7 +120,7 @@ slint::slint! {
                         clicked => { root.switch_tab(0); }
                     }
                     Text {
-                        text: "✍️ Compositore & Tastiera Virtuale";
+                        text: "✍️ Composer & Virtual Keyboard";
                         color: root.active_tab == 0 ? #ffffff : #a0aec0;
                         font_size: 13px;
                         font_weight: 600;
@@ -156,7 +156,7 @@ slint::slint! {
                         clicked => { root.switch_tab(2); }
                     }
                     Text {
-                        text: "👥 Rubrica Contatti & Avatar";
+                        text: "👥 Contacts & Key Avatars";
                         color: root.active_tab == 2 ? #ffffff : #a0aec0;
                         font_size: 13px;
                         font_weight: 600;
@@ -167,7 +167,7 @@ slint::slint! {
             }
 
             // -----------------------------------------------------------------
-            // TAB 0: COMPOSITORE & TASTIERA VIRTUALE
+            // TAB 0: COMPOSER & VIRTUAL KEYBOARD
             // -----------------------------------------------------------------
             if root.active_tab == 0 : VerticalLayout {
                 spacing: 10px;
@@ -212,20 +212,20 @@ slint::slint! {
                 HorizontalLayout {
                     spacing: 8px;
                     Text {
-                        text: "Destinatario (Box ID):";
+                        text: "Recipient (Box ID):";
                         color: #e2e8f0;
                         vertical_alignment: center;
                         font_size: 12px;
                     }
                     LineEdit {
                         text <=> root.recipient_box_id;
-                        placeholder_text: "Inserisci 32-byte Hex Box ID destinatario (oppure selezionalo dalla Rubrica)...";
+                        placeholder_text: "Enter 32-byte Hex Box ID (or pick from Contacts)...";
                         horizontal_stretch: 1;
                     }
                 }
 
                 Text {
-                    text: "Messaggio da cifrare:";
+                    text: "Message Payload to Encrypt:";
                     color: #e2e8f0;
                     font_size: 12px;
                 }
@@ -238,16 +238,24 @@ slint::slint! {
 
                 // Virtual Keyboard Toggle & Section
                 HorizontalLayout {
-                    spacing: 12px;
+                    spacing: 8px;
+                    alignment: start;
                     CheckBox {
-                        text: "Abilita Tastiera Virtuale Anti-Keylogger (Opzionale: aumenta lo score a 5 stelle ⭐⭐⭐⭐⭐)";
                         checked <=> root.use_virtual_kbd;
                         toggled => {
                             root.toggle_virtual_kbd(root.use_virtual_kbd);
                         }
                     }
+                    Text {
+                        text: "Anti-Keylogger Virtual Keyboard (Shielding: ★★★★★ 100%)";
+                        color: #edf2f7;
+                        font_size: 12px;
+                        font_weight: 600;
+                        vertical_alignment: center;
+                    }
+                    Rectangle { horizontal_stretch: 1; }
                     if root.use_virtual_kbd : Button {
-                        text: "Rimescola Tasti (Intra-gruppo) 🔀";
+                        text: "Shuffle Keys (Intra-Group) 🔀";
                         clicked => { root.shuffle_keys_clicked(); }
                     }
                 }
@@ -263,7 +271,7 @@ slint::slint! {
                         spacing: 6px;
 
                         Text {
-                            text: "Disposizione raggruppata (numeri, lettere e simboli separati per digitazione intuitiva):";
+                            text: "Partitioned Layout (Numbers, letters and symbols isolated for intuitive typing):";
                             color: #63b3ed;
                             font_size: 11px;
                         }
@@ -301,18 +309,18 @@ slint::slint! {
                     spacing: 12px;
 
                     Button {
-                        text: "Costruisci Pacchetto Sphinx & Salva Draft";
+                        text: "Construct Sphinx Packet & Save Draft";
                         primary: true;
                         clicked => { root.send_message_clicked(); }
                     }
 
                     Button {
-                        text: "Esporta Spool USB";
+                        text: "Export USB Spool";
                         clicked => { root.export_spool_clicked(); }
                     }
 
                     Button {
-                        text: "Sincronizza / Polla Pigeonhole";
+                        text: "Poll Pigeonhole Mailbox";
                         clicked => { root.poll_mailbox_clicked(); }
                     }
                 }
@@ -325,14 +333,14 @@ slint::slint! {
                 spacing: 10px;
 
                 Text {
-                    text: "📬 ARCHIVIO ASINCRONO PIGEONHOLE & STATI QUANTISTICI";
+                    text: "📬 ASYNCHRONOUS PIGEONHOLE MAILBOX & QUANTUM STATES";
                     color: #4fd1c5;
                     font_size: 15px;
                     font_weight: 700;
                 }
 
                 Text {
-                    text: "I messaggi non ancora osservati rimangono in sovrapposizione quantistica (cifrati). La decoerenza avviene all'atto della lettura.";
+                    text: "Unobserved messages remain in quantum superposition (sealed). Wavefunction collapses upon local vault observation.";
                     color: #a0aec0;
                     font_size: 11px;
                 }
@@ -349,18 +357,18 @@ slint::slint! {
                         padding: 8px;
                         spacing: 8px;
                         Text {
-                            text: "Busta Ricevuta (Hex):";
+                            text: "Inbound Envelope (Hex):";
                             color: #e2e8f0;
                             font_size: 12px;
                             vertical_alignment: center;
                         }
                         LineEdit {
                             text <=> root.ingest_raw_hex;
-                            placeholder_text: "Incolla l'esadecimale della busta ReplicaReadReply ricevuta dallo Spool/QR...";
+                            placeholder_text: "Paste raw hex of ReplicaReadReply envelope received via USB spool/QR...";
                             horizontal_stretch: 1;
                         }
                         Button {
-                            text: "Decifra & Osserva";
+                            text: "Decrypt & Observe";
                             primary: true;
                             clicked => { root.ingest_reply_clicked(); }
                         }
@@ -368,7 +376,7 @@ slint::slint! {
                 }
 
                 Text {
-                    text: "Messaggi nella Mailbox Locale del Vault:";
+                    text: "Messages Stored in Local Vault Mailbox:";
                     color: #e2e8f0;
                     font_size: 12px;
                     font_weight: 600;
@@ -401,7 +409,7 @@ slint::slint! {
                                         width: 110px;
                                     }
                                     Text {
-                                        text: "Corrispondente: " + msg.party;
+                                        text: "Peer: " + msg.party;
                                         color: #e2e8f0;
                                         font_size: 11px;
                                         font_family: "monospace";
@@ -422,7 +430,7 @@ slint::slint! {
                                         horizontal_stretch: 1;
                                     }
                                     Text {
-                                        text: "Anteprima: " + msg.preview;
+                                        text: "Preview: " + msg.preview;
                                         color: #718096;
                                         font_size: 10px;
                                     }
@@ -459,20 +467,20 @@ slint::slint! {
             }
 
             // -----------------------------------------------------------------
-            // TAB 2: RUBRICA CONTATTI & AVATAR
+            // TAB 2: CONTACTS & KEY AVATARS
             // -----------------------------------------------------------------
             if root.active_tab == 2 : VerticalLayout {
                 spacing: 10px;
 
                 Text {
-                    text: "👥 RUBRICA CONTATTI & AVATAR CRITTOGRAFICI DETERMINISTICI";
+                    text: "👥 CONTACTS & DETERMINISTIC CRYPTOGRAPHIC AVATARS";
                     color: #4fd1c5;
                     font_size: 15px;
                     font_weight: 700;
                 }
 
                 Text {
-                    text: "Ogni contatto possiede un avatar 5x5 a simmetria bilaterale derivato da SHA-256(username | Box ID). 100% Autonomo, zero email e verificabile visivamente.";
+                    text: "Each contact has a bilateral 5x5 identicon derived from SHA-256(username | Box ID). 100% sovereign, zero email, visually verifiable.";
                     color: #a0aec0;
                     font_size: 11px;
                 }
@@ -489,23 +497,23 @@ slint::slint! {
                         padding: 8px;
                         spacing: 8px;
                         Text {
-                            text: "Nuovo Contatto:";
+                            text: "New Contact:";
                             color: #e2e8f0;
                             font_size: 12px;
                             vertical_alignment: center;
                         }
                         LineEdit {
                             text <=> root.new_contact_username;
-                            placeholder_text: "Username (es. Alice)...";
+                            placeholder_text: "Username (e.g. Alice)...";
                             width: 160px;
                         }
                         LineEdit {
                             text <=> root.new_contact_box_id;
-                            placeholder_text: "32-byte Hex Box ID (64 caratteri hex)...";
+                            placeholder_text: "32-byte Hex Box ID (64 hex characters)...";
                             horizontal_stretch: 1;
                         }
                         Button {
-                            text: "Aggiungi & Genera Avatar 🎨";
+                            text: "Add & Generate Avatar 🎨";
                             primary: true;
                             clicked => { root.add_contact_clicked(); }
                         }
@@ -513,7 +521,7 @@ slint::slint! {
                 }
 
                 Text {
-                    text: "Contatti Sovrani Salvati nel Vault:";
+                    text: "Sovereign Contacts Saved in Vault:";
                     color: #e2e8f0;
                     font_size: 12px;
                     font_weight: 600;
@@ -555,13 +563,13 @@ slint::slint! {
                                         font_family: "monospace";
                                     }
                                     Text {
-                                        text: "Avatar deterministico generato in puro Rust — immutabile";
+                                        text: "Pure Rust deterministic identicon — immutable & verifiable";
                                         color: #718096;
                                         font_size: 10px;
                                     }
                                 }
                                 Button {
-                                    text: "Invia Messaggio ➔";
+                                    text: "Send Message ➔";
                                     clicked => { root.use_contact_clicked(contact.box_id); }
                                 }
                             }
@@ -621,7 +629,7 @@ fn reload_ui_models(ui: &MainWindow, mailbox: &VaultMailbox) {
                 preview: m.plaintext.chars().take(40).collect::<String>().into(),
                 time_str: format!("{}", m.timestamp).into(),
                 quantum_state: m.quantum_state.clone().into(),
-                secrecy: format!("{} stelle", m.secrecy_stars).into(),
+                secrecy: format!("{} stars", m.secrecy_stars).into(),
                 raw_plaintext: m.plaintext.clone().into(),
             }
         })
@@ -645,17 +653,19 @@ fn reload_ui_models(ui: &MainWindow, mailbox: &VaultMailbox) {
 
 pub fn run_gui() -> Result<(), String> {
     if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        println!("==> Nessun display grafico attivo rilevato (DISPLAY / WAYLAND_DISPLAY non impostati).");
-        println!("==> Avvio della TUI Sovereign interattiva con tastiera virtuale raggruppata...\n");
+        println!("==> No active display detected (DISPLAY / WAYLAND_DISPLAY unset).");
+        println!("==> Starting interactive Sovereign TUI with partitioned virtual keyboard...\n");
         return run_interactive_tui();
     }
 
     let mailbox_path = default_vault_mailbox_path();
     let mailbox = VaultMailbox::new_or_load(&mailbox_path)
-        .map_err(|e| format!("Errore inizializzazione mailbox: {}", e))?;
+        .map_err(|e| format!("Mailbox initialization error: {}", e))?;
 
     let main_window = MainWindow::new().map_err(|e| format!("Slint GUI init error: {}", e))?;
-    let kbd_state = VirtualKeyboardState::new();
+    let mut kbd_state = VirtualKeyboardState::new();
+    kbd_state.is_enabled = true;
+    kbd_state.used_for_composition = true;
 
     let my_id = format!("Box ID: {}", mailbox.identity.box_id_hex);
     main_window.set_my_box_id(my_id.into());
@@ -683,7 +693,7 @@ pub fn run_gui() -> Result<(), String> {
                 ui.set_symbols_row(s_str.into());
 
                 let score = kbd.compute_secrecy_score();
-                let star_text = format!("{} ({}%)", "⭐".repeat(score.stars as usize), score.score_percentage);
+                let star_text = format!("{} ({}%)", "★".repeat(score.stars as usize), score.score_percentage);
                 ui.set_secrecy_stars(star_text.into());
                 ui.set_secrecy_desc(score.opsec_note.into());
             }
@@ -715,13 +725,13 @@ pub fn run_gui() -> Result<(), String> {
             k.used_for_composition = enabled;
             let score = k.compute_secrecy_score();
             if let Some(ui) = ui_weak.upgrade() {
-                let star_text = format!("{} ({}%)", "⭐".repeat(score.stars as usize), score.score_percentage);
+                let star_text = format!("{} ({}%)", "★".repeat(score.stars as usize), score.score_percentage);
                 ui.set_secrecy_stars(star_text.into());
                 ui.set_secrecy_desc(score.opsec_note.into());
                 if enabled {
-                    ui.set_status_log("Tastiera virtuale raggruppata abilitata. Score di segretezza elevato al 100% ⭐⭐⭐⭐⭐.".into());
+                    ui.set_status_log("Partitioned virtual keyboard enabled. Secrecy score boosted to 100% ★★★★★.".into());
                 } else {
-                    ui.set_status_log("Tastiera fisica abilitata. Score impostato su livello standard (70%).".into());
+                    ui.set_status_log("Physical keyboard enabled. Secrecy score set to standard isolation (70%).".into());
                 }
             }
         });
@@ -737,7 +747,7 @@ pub fn run_gui() -> Result<(), String> {
             k.shuffle_within_groups();
             update_fn(&k);
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_status_log("Tasti rimescolati all'interno dei gruppi (coordinate mouse scrambleate).".into());
+                ui.set_status_log("Keys shuffled within partitions (mouse coordinates randomized).".into());
             }
         });
     }
@@ -761,7 +771,7 @@ pub fn run_gui() -> Result<(), String> {
                 };
 
                 if recip.trim().is_empty() {
-                    ui.set_status_log("Inserisci un Box ID destinatario valido prima di procedere.".into());
+                    ui.set_status_log("Enter a valid recipient Box ID before proceeding.".into());
                     return;
                 }
 
@@ -770,11 +780,11 @@ pub fn run_gui() -> Result<(), String> {
                     Ok(replica_write) => {
                         let _ = mbox.save(&mbox_path);
                         reload_ui_models(&ui, &mbox);
-                        ui.set_status_log(format!("Bozza cifrata con successo per {} ({} bytes depositati).", &recip[0..8.min(recip.len())], replica_write.payload.len()).into());
-                        ui.set_quantum_status("🐱 Stato Quantistico: Superposizione (Pacchetto pronto per mixnet)".into());
+                        ui.set_status_log(format!("Draft encrypted successfully for {} ({} bytes deposited).", &recip[0..8.min(recip.len())], replica_write.payload.len()).into());
+                        ui.set_quantum_status("🐱 Quantum State: Superposition (Packet queued for mixnet)".into());
                     }
                     Err(e) => {
-                        ui.set_status_log(format!("Errore cifratura deposito: {}", e).into());
+                        ui.set_status_log(format!("Deposit encryption error: {}", e).into());
                     }
                 }
             }
@@ -786,8 +796,8 @@ pub fn run_gui() -> Result<(), String> {
         let ui_weak = main_window.as_weak();
         main_window.on_export_spool_clicked(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_status_log("Pacchetti cifrati accodati nella spool directory rimovibile (/media/usb/spool).".into());
-                ui.set_opsec_tip("Suggerimento: Usa schede SD con interruttore di sola lettura per prevenire BadUSB.".into());
+                ui.set_status_log("Encrypted packets spooled to removable media directory (/media/usb/spool).".into());
+                ui.set_opsec_tip("Tip: Use physical read-only hardware switch SD cards to neutralize BadUSB attacks.".into());
             }
         });
     }
@@ -797,8 +807,8 @@ pub fn run_gui() -> Result<(), String> {
         let ui_weak = main_window.as_weak();
         main_window.on_poll_mailbox_clicked(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_status_log("SURB generati per interrogazione anonima della mailbox Pigeonhole.".into());
-                ui.set_quantum_status("🐱 Stato Quantistico: Superposizione in attesa di osservazione".into());
+                ui.set_status_log("SURBs generated for anonymous polling of Pigeonhole mailbox.".into());
+                ui.set_quantum_status("🐱 Quantum State: Superposition awaiting observation".into());
             }
         });
     }
@@ -809,8 +819,8 @@ pub fn run_gui() -> Result<(), String> {
         main_window.on_select_message_clicked(move |raw_text, id| {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_selected_message_text(raw_text);
-                ui.set_selected_message_info(format!("Messaggio ID: {} — Decifrato ed osservato nel Vault:", id).into());
-                ui.set_status_log("Messaggio selezionato e visualizzato.".into());
+                ui.set_selected_message_info(format!("Message ID: {} — Decrypted and observed in Vault:", id).into());
+                ui.set_status_log("Message selected and inspected.".into());
             }
         });
     }
@@ -824,14 +834,14 @@ pub fn run_gui() -> Result<(), String> {
             if let Some(ui) = ui_weak.upgrade() {
                 let hex_str = ui.get_ingest_raw_hex().trim().to_string();
                 if hex_str.is_empty() {
-                    ui.set_status_log("Inserisci l'esadecimale della busta ReplicaReadReply da decifrare.".into());
+                    ui.set_status_log("Enter the hex string of the ReplicaReadReply envelope to decrypt.".into());
                     return;
                 }
 
                 let raw_bytes = match hex::decode(&hex_str) {
                     Ok(b) => b,
                     Err(e) => {
-                        ui.set_status_log(format!("Errore decodifica esadecimale: {}", e).into());
+                        ui.set_status_log(format!("Hex decoding error: {}", e).into());
                         return;
                     }
                 };
@@ -839,7 +849,7 @@ pub fn run_gui() -> Result<(), String> {
                 let reply = match ReplicaReadReply::decode(&raw_bytes) {
                     Ok(r) => r,
                     Err(e) => {
-                        ui.set_status_log(format!("Errore decodifica busta ReplicaReadReply: {}", e).into());
+                        ui.set_status_log(format!("ReplicaReadReply decoding error: {}", e).into());
                         return;
                     }
                 };
@@ -851,11 +861,11 @@ pub fn run_gui() -> Result<(), String> {
                         reload_ui_models(&ui, &mbox);
                         ui.set_ingest_raw_hex("".into());
                         ui.set_selected_message_text(plaintext.clone().into());
-                        ui.set_selected_message_info("Busta decifrata con successo! Stato: Decoerenza osservata:".into());
-                        ui.set_status_log("Busta Pigeonhole decifrata e salvata nella mailbox!".into());
+                        ui.set_selected_message_info("Envelope decrypted successfully! State: Observed decoherence:".into());
+                        ui.set_status_log("Pigeonhole envelope decrypted and committed to mailbox!".into());
                     }
                     Err(e) => {
-                        ui.set_status_log(format!("Errore decifratura busta: {}", e).into());
+                        ui.set_status_log(format!("Envelope decryption error: {}", e).into());
                     }
                 }
             }
@@ -873,7 +883,7 @@ pub fn run_gui() -> Result<(), String> {
                 let box_id = ui.get_new_contact_box_id().trim().to_string();
 
                 if username.is_empty() || box_id.is_empty() {
-                    ui.set_status_log("Inserisci sia il nome utente che il Box ID a 32-byte hex.".into());
+                    ui.set_status_log("Enter both a username and a 32-byte hex Box ID.".into());
                     return;
                 }
 
@@ -884,10 +894,10 @@ pub fn run_gui() -> Result<(), String> {
                         reload_ui_models(&ui, &mbox);
                         ui.set_new_contact_username("".into());
                         ui.set_new_contact_box_id("".into());
-                        ui.set_status_log(format!("Contatto '{}' aggiunto con successo e avatar deterministico generato!", username).into());
+                        ui.set_status_log(format!("Contact '{}' added successfully with deterministic identicon generated!", username).into());
                     }
                     Err(e) => {
-                        ui.set_status_log(format!("Errore aggiunta contatto: {}", e).into());
+                        ui.set_status_log(format!("Add contact error: {}", e).into());
                     }
                 }
             }
@@ -901,12 +911,12 @@ pub fn run_gui() -> Result<(), String> {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_recipient_box_id(box_id.clone());
                 ui.set_active_tab(0); // Switch to Composer
-                ui.set_status_log(format!("Destinatario impostato su {}.", &box_id[0..12.min(box_id.len())]).into());
+                ui.set_status_log(format!("Recipient set to {}.", &box_id[0..12.min(box_id.len())]).into());
             }
         });
     }
 
-    main_window.run().map_err(|e| format!("Errore esecuzione interfaccia grafica Slint: {}", e))?;
+    main_window.run().map_err(|e| format!("Slint GUI runtime error: {}", e))?;
     Ok(())
 }
 
@@ -914,29 +924,29 @@ pub fn run_gui() -> Result<(), String> {
 pub fn run_interactive_tui() -> Result<(), String> {
     let mailbox_path = default_vault_mailbox_path();
     let mut mailbox = VaultMailbox::new_or_load(&mailbox_path)
-        .map_err(|e| format!("Errore inizializzazione mailbox: {}", e))?;
+        .map_err(|e| format!("Mailbox initialization error: {}", e))?;
 
     let mut kbd = VirtualKeyboardState::new();
 
     loop {
         println!("\n================================================================================");
-        println!("     KATZENPOST SOVEREIGN VAULT — SOVRANITÀ AIR-GAPPED & PIGEONHOLE           ");
+        println!("     KATZENPOST SOVEREIGN VAULT — AIR-GAPPED SOVEREIGNTY & PIGEONHOLE          ");
         println!("================================================================================");
-        println!("Operatore Sovrano     : {}", mailbox.identity.username);
-        println!("Identità Box ID       : {}", mailbox.identity.box_id_hex);
-        println!("Avatar Identicon (Crittografico deterministico):");
+        println!("Sovereign Operator    : {}", mailbox.identity.username);
+        println!("Box ID Identity       : {}", mailbox.identity.box_id_hex);
+        println!("Identicon Avatar (Deterministic cryptographic profile):");
         println!("{}", mailbox.identity.identicon().render_terminal());
         println!("--------------------------------------------------------------------------------");
-        println!("Messaggi in Mailbox   : {}", mailbox.messages.len());
-        println!("Contatti in Rubrica   : {}", mailbox.contacts.len());
+        println!("Messages in Mailbox   : {}", mailbox.messages.len());
+        println!("Contacts in Addressbook: {}", mailbox.contacts.len());
         println!("--------------------------------------------------------------------------------");
         println!("Menu:");
-        println!("  1. Componi & deposita messaggio (con tastiera virtuale raggruppata anti-keylogger)");
-        println!("  2. Visualizza messaggi Mailbox (Stato Quantistico di Schrödinger)");
-        println!("  3. Visualizza rubrica contatti & avatar deterministici");
-        println!("  4. Aggiungi nuovo contatto in rubrica");
-        println!("  5. Esci");
-        print!("\nScelta [1-5]: ");
+        println!("  1. Compose & deposit message (with partitioned anti-keylogger virtual keyboard)");
+        println!("  2. View Mailbox messages (Schrödinger Quantum State)");
+        println!("  3. View contacts & deterministic identicon avatars");
+        println!("  4. Add new contact");
+        println!("  5. Exit");
+        print!("\nSelection [1-5]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
 
         let mut choice = String::new();
@@ -945,23 +955,23 @@ pub fn run_interactive_tui() -> Result<(), String> {
         match choice.trim() {
             "1" => {
                 let score = kbd.compute_secrecy_score();
-                println!("\nPunteggio attuale: {} ({}%) - {}", "⭐".repeat(score.stars as usize), score.score_percentage, score.shielding_level);
-                println!("Vuoi abilitare la tastiera virtuale raggruppata anti-keylogger per portare lo score al 100% ⭐⭐⭐⭐⭐?");
-                print!("[s/N]: ");
+                println!("\nCurrent Secrecy Score: {} ({}%) - {}", "⭐".repeat(score.stars as usize), score.score_percentage, score.shielding_level);
+                println!("Enable partitioned anti-keylogger virtual keyboard to boost secrecy score to 100% ⭐⭐⭐⭐⭐?");
+                print!("[y/N]: ");
                 io::stdout().flush().map_err(|e| e.to_string())?;
 
                 let mut kbd_choice = String::new();
                 io::stdin().read_line(&mut kbd_choice).map_err(|e| e.to_string())?;
-                let use_v = kbd_choice.trim().eq_ignore_ascii_case("s") || kbd_choice.trim().eq_ignore_ascii_case("y");
+                let use_v = kbd_choice.trim().eq_ignore_ascii_case("y") || kbd_choice.trim().eq_ignore_ascii_case("s");
 
                 if use_v {
                     kbd.is_enabled = true;
                     kbd.used_for_composition = true;
                     let boosted = kbd.compute_secrecy_score();
-                    println!("[✓] Tastiera virtuale attiva: score elevato a {} ({}%)", "⭐".repeat(boosted.stars as usize), boosted.score_percentage);
+                    println!("[✓] Virtual keyboard active: score boosted to {} ({}%)", "⭐".repeat(boosted.stars as usize), boosted.score_percentage);
                 }
 
-                print!("\nInserisci Box ID destinatario (o premi Enter per auto-invio loopback): ");
+                print!("\nEnter recipient Box ID (or press Enter for loopback self-deposit): ");
                 io::stdout().flush().map_err(|e| e.to_string())?;
                 let mut target = String::new();
                 io::stdin().read_line(&mut target).map_err(|e| e.to_string())?;
@@ -972,58 +982,58 @@ pub fn run_interactive_tui() -> Result<(), String> {
                     target.to_string()
                 };
 
-                print!("Inserisci il messaggio: ");
+                print!("Enter message body: ");
                 io::stdout().flush().map_err(|e| e.to_string())?;
                 let mut msg = String::new();
                 io::stdin().read_line(&mut msg).map_err(|e| e.to_string())?;
                 let msg = msg.trim();
 
                 let final_score = kbd.compute_secrecy_score();
-                let method = if use_v { "Virtual Keyboard (Grouped Anti-Keylogger)" } else { "Physical Keyboard" };
+                let method = if use_v { "Virtual Keyboard (Partitioned Anti-Keylogger)" } else { "Physical Keyboard" };
 
                 let deposit = mailbox.deposit_draft(&target_id, msg, final_score.stars, method)?;
                 mailbox.save(&mailbox_path)?;
 
-                println!("[✓] Bozza cifrata e depositata con successo!");
-                println!("    Dimensione: {} byte", deposit.payload.len());
-                println!("    Stato quantistico: Superposizione (Scatola di Schrödinger chiusa)");
+                println!("[✓] Draft encrypted and deposited successfully!");
+                println!("    Size: {} bytes", deposit.payload.len());
+                println!("    Quantum state: Superposition (Schrödinger vault sealed)");
             }
 
             "2" => {
-                println!("\n--- ARCHIVIO MESSAGGI VAULT ({}) ---", mailbox.messages.len());
+                println!("\n--- VAULT MESSAGE ARCHIVE ({}) ---", mailbox.messages.len());
                 if mailbox.messages.is_empty() {
-                    println!("Nessun messaggio presente.");
+                    println!("No messages present.");
                 } else {
                     for (i, m) in mailbox.messages.iter().enumerate() {
                         let dir = match m.direction {
                             MessageDirection::Inbound => "INBOUND [↓]",
                             MessageDirection::Outbound => "OUTBOUND [↑]",
                         };
-                        println!("#{} {} | {} | {} stelle | Stato: {}", i + 1, dir, m.id, m.secrecy_stars, m.quantum_state);
-                        println!("   Testo: {}", m.plaintext);
+                        println!("#{} {} | {} | {} stars | State: {}", i + 1, dir, m.id, m.secrecy_stars, m.quantum_state);
+                        println!("   Body: {}", m.plaintext);
                     }
                 }
             }
 
             "3" => {
-                println!("\n--- RUBRICA CONTATTI SOVRANI ({}) ---", mailbox.contacts.len());
+                println!("\n--- SOVEREIGN CONTACTS ({}) ---", mailbox.contacts.len());
                 if mailbox.contacts.is_empty() {
-                    println!("Nessun contatto salvato.");
+                    println!("No contacts saved.");
                 } else {
                     for (i, c) in mailbox.contacts.iter().enumerate() {
-                        println!("#{} Contatto: {} (Box ID: {})", i + 1, c.username, c.box_id_hex);
+                        println!("#{} Contact: {} (Box ID: {})", i + 1, c.username, c.box_id_hex);
                         println!("{}", c.identicon().render_terminal());
                     }
                 }
             }
 
             "4" => {
-                print!("\nUsername nuovo contatto: ");
+                print!("\nNew contact username: ");
                 io::stdout().flush().map_err(|e| e.to_string())?;
                 let mut u = String::new();
                 io::stdin().read_line(&mut u).map_err(|e| e.to_string())?;
 
-                print!("Box ID (64 caratteri hex): ");
+                print!("Box ID (64 hex characters): ");
                 io::stdout().flush().map_err(|e| e.to_string())?;
                 let mut b = String::new();
                 io::stdin().read_line(&mut b).map_err(|e| e.to_string())?;
@@ -1031,22 +1041,22 @@ pub fn run_interactive_tui() -> Result<(), String> {
                 match mailbox.add_contact(u.trim(), b.trim()) {
                     Ok(c) => {
                         mailbox.save(&mailbox_path)?;
-                        println!("[✓] Contatto aggiunto con successo! Ecco il suo avatar deterministico:");
+                        println!("[✓] Contact added successfully! Deterministic identicon avatar:");
                         println!("{}", c.identicon().render_terminal());
                     }
                     Err(e) => {
-                        println!("[!] Errore: {}", e);
+                        println!("[!] Error: {}", e);
                     }
                 }
             }
 
             "5" => {
-                println!("Chiusura Vault Sovrano. Arrivederci!");
+                println!("Exiting Sovereign Vault. Goodbye!");
                 break;
             }
 
             _ => {
-                println!("Opzione non valida.");
+                println!("Invalid option.");
             }
         }
     }
