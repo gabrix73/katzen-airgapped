@@ -1,9 +1,7 @@
 use clap::{Parser, Subcommand};
 use katzen_airgapped::{fragment_payload, render_qr_terminal, KpagChunk, MsgType, Reassembler, DEFAULT_CHUNK_SIZE};
-use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
-use std::net::TcpStream;
-use std::os::unix::net::UnixStream;
+use katzen_airgapped::pigeonhole::write_private_atomic;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -77,62 +75,98 @@ fn forward_or_spool_packet(
     println!("Sequence ID:     {}", seq_id);
     println!("Message Type:    {:?}", msg_type);
     println!("Assembled Size:  {} bytes", payload.len());
-    println!("Sphinx Invariant: {} (1024 bytes)", if payload.len() == 1024 { "VERIFIED" } else { "CUSTOM" });
     println!("=======================================================");
-    println!("[*] Hot Station possesses ZERO encryption keys.");
-
-    // Attempt Unix domain socket forwarding first
-    if socket_path.exists() {
-        println!("[*] Connecting to kpclientd via Unix domain socket ({:?})...", socket_path);
-        match UnixStream::connect(socket_path) {
-            Ok(mut stream) => {
-                if let Err(e) = stream.write_all(payload) {
-                    eprintln!("[-] Error transmitting to kpclientd socket: {}", e);
-                } else {
-                    println!("[✓] Dispatched 1024-byte Sphinx packet to kpclientd socket successfully!");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("[-] Could not connect to kpclientd socket: {}", e);
-            }
-        }
-    }
-
-    // Attempt TCP forwarding if configured
-    if let Some(addr) = tcp_addr {
-        println!("[*] Connecting to kpclientd via TCP ({addr})...");
-        match TcpStream::connect(addr) {
-            Ok(mut stream) => {
-                if let Err(e) = stream.write_all(payload) {
-                    eprintln!("[-] Error transmitting to kpclientd TCP: {}", e);
-                } else {
-                    println!("[✓] Dispatched 1024-byte Sphinx packet to kpclientd TCP successfully!");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("[-] Could not connect to kpclientd TCP endpoint: {}", e);
-            }
-        }
-    }
-
-    // Fallback: Spool to local spool directory
-    if let Err(e) = fs::create_dir_all(spool_dir) {
-        eprintln!("[-] Could not create spool directory: {}", e);
+    if msg_type != MsgType::SphinxOut || payload.len() != 1024 {
+        eprintln!("[-] Unexpected packet type {:?} or size {}; refusing dispatch", msg_type, payload.len());
         return;
     }
 
-    let spool_file = spool_dir.join(format!("sphinx_outbound_{seq_id}.bin"));
-    match fs::write(&spool_file, payload) {
-        Ok(_) => {
-            println!("[!] Notice: kpclientd is not running locally.");
-            println!("[✓] Sphinx packet spooled to: {}", spool_file.display());
-            println!("[*] Ready for transmission when kpclientd daemon starts up.");
+    println!("[*] Attempting live mixnet dispatch via kpclientd...");
+    match katzen_airgapped::thinclient::dispatch_via_kpclientd(payload, "courier", socket_path, tcp_addr) {
+        Ok(receipt) => {
+            println!("[✓] Live mixnet dispatch confirmed by kpclientd!");
+            println!("    Epoch:             {}", receipt.epoch);
+            println!("    Destination:       {}", receipt.destination_service);
+            println!("    Destination Node:  {}", receipt.destination_node_hex);
+            println!("    Forward Route:     {}", receipt.forward_route.join(" -> "));
+            println!("    Return Route:      {}", receipt.return_route.join(" -> "));
+            println!("    Reply ETA:         {} ms", receipt.reply_eta_ms);
+
+            let sent_dir = spool_dir.join("sent");
+            if let Err(e) = std::fs::create_dir_all(&sent_dir) {
+                eprintln!("[-] Warning: could not create sent directory: {}", e);
+            } else {
+                let receipt_file = sent_dir.join(format!("receipt_{}.json", seq_id));
+                if let Ok(json_bytes) = serde_json::to_vec_pretty(&receipt) {
+                    if let Err(e) = write_private_atomic(&receipt_file, &json_bytes) {
+                        eprintln!("[-] Warning: failed to record delivery receipt: {}", e);
+                    } else {
+                        println!("[i] Delivery receipt recorded: {}", receipt_file.display());
+                    }
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("[-] Failed to spool packet: {}", e);
+        Err(err) => {
+            println!("[-] kpclientd dispatch failed or daemon offline: {}", err);
+            println!("[*] Durable spool fallback: saving packet to outbox for deferred transmission...");
+
+            let outbox_dir = spool_dir.join("outbox");
+            if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
+                eprintln!("[-] Failed to create outbox directory: {}", e);
+                return;
+            }
+
+            let spool_file = outbox_dir.join(format!("sphinx_outbound_{}.bin", seq_id));
+            match write_private_atomic(&spool_file, payload) {
+                Ok(_) => {
+                    println!("[✓] Packet durably spooled to: {}", spool_file.display());
+                }
+                Err(e) => {
+                    eprintln!("[-] Failed to spool packet to outbox: {}", e);
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn test_forward_or_spool_handling() {
+        let root = std::env::temp_dir().join(format!("katzen-hot-test-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("nonexistent_daemon.sock");
+        let spool = root.join("spool");
+
+        forward_or_spool_packet(1, MsgType::SphinxOut, &[0x42u8; 1024], &socket, None, &spool);
+
+        let spooled = spool.join("outbox").join("sphinx_outbound_1.bin");
+        let receipt = spool.join("sent").join("receipt_1.json");
+
+        // Either live dispatch succeeded (recording receipt) or durable outbox spool took over
+        if receipt.exists() {
+            let data = fs::read_to_string(&receipt).unwrap();
+            assert!(data.contains("destination_service") || data.contains("epoch"));
+            println!("Verified live dispatch receipt generation!");
+        } else {
+            assert!(spooled.exists(), "Expected outbox spool file to exist upon daemon offline");
+            assert_eq!(fs::metadata(&spooled).unwrap().permissions().mode() & 0o777, 0o600);
+            let contents = fs::read(&spooled).unwrap();
+            assert_eq!(contents.len(), 1024);
+            assert_eq!(contents[0], 0x42);
+            println!("Verified durable spooling fallback!");
+        }
+
+        // Non-SphinxOut message type should be rejected without spooling or dispatch
+        forward_or_spool_packet(2, MsgType::ReplyIn, &[0x42u8; 1024], &socket, None, &spool);
+        assert!(!spool.join("outbox").join("sphinx_outbound_2.bin").exists());
+        assert!(!spool.join("sent").join("receipt_2.json").exists());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }
 
@@ -251,7 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 seq_id,
                 data.as_bytes(),
                 DEFAULT_CHUNK_SIZE,
-            );
+            )?;
 
             println!("=======================================================");
             println!(" KATZENPOST HOT STATION: PRESENTING REPLY TO COLD ");

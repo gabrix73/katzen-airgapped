@@ -1,10 +1,15 @@
 use clap::{Parser, Subcommand};
 use katzen_airgapped::identicon::Identicon;
 use katzen_airgapped::pigeonhole::{
-    default_vault_mailbox_path, MessageDirection, ReplicaRead, ReplicaReadReply, VaultMailbox,
+    default_spool_dir, default_vault_mailbox_path, MailboxMessage,
+    MessageDirection, ReplicaRead, ReplicaReadReply, VaultMailbox, write_private_atomic,
 };
-use katzen_airgapped::sandbox::{apply_network_isolation, is_network_blocked, SandboxStatus};
+use katzen_airgapped::sandbox::{apply_network_isolation, SandboxStatus};
 use katzen_airgapped::sphinx::{ConsensusTopology, SphinxEngine, SurbManager};
+use katzen_airgapped::thinclient::{
+    fetch_pigeonhole_box,
+    PigeonholeBoxReceipt,
+};
 use katzen_airgapped::ui::run_gui;
 use katzen_airgapped::virtual_keyboard::VirtualKeyboardState;
 use katzen_airgapped::{
@@ -13,18 +18,16 @@ use katzen_airgapped::{
 use rand::Rng;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
-use std::net::TcpStream;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
 #[command(name = "katzen")]
 #[command(author = "Gabriel Virebent <gabrix73>")]
 #[command(version = "0.1.0")]
-#[command(about = "Katzenpost Sovereign Universal Client - Asynchronous Post-Quantum Mixnet Messaging")]
+#[command(about = "Experimental Katzenpost offline QR workflow and local vault")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -32,27 +35,48 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run all-in-one unified mode on a connected machine (vault + network spooler)
+    /// Build a synthetic local packet and save it for QR tests
     Standalone {
         /// Message text to send
         #[arg(short, long)]
         message: Option<String>,
 
         /// Destination mailbox or service
-        #[arg(short = 't', long, default_value = "pigeonhole-egress-01")]
+        #[arg(short = 't', long, default_value = "courier")]
         target: String,
 
-        /// Path to kpclientd Unix domain socket
-        #[arg(short, long, default_value = "/run/katzenpost/client.sock")]
-        socket: PathBuf,
-
-        /// Optional removable media spool directory (e.g. /media/usb/katzen-spool)
+        /// Optional removable media spool directory (defaults to <usb_root>/spool)
         #[arg(long)]
         spool_dir: Option<PathBuf>,
 
-        /// Apply kernel-level network isolation to the local Vault engine
+        /// Require kernel-enforced network isolation or fail
         #[arg(long, default_value_t = false)]
         sandbox: bool,
+
+    },
+
+    /// Retrieve and decrypt messages from the live Katzenpost Pigeonhole mixnet replica or USB spool
+    #[command(alias = "read", alias = "fetch")]
+    Receive {
+        /// Optional BACAP Read Capability (136-byte hex). Defaults to latest receipt in spool/sent/pigeonhole_box_latest.json
+        #[arg(long)]
+        read_cap: Option<String>,
+
+        /// Optional BACAP Message Box Index (104-byte hex). Defaults to latest receipt in spool/sent/pigeonhole_box_latest.json
+        #[arg(long)]
+        index: Option<String>,
+
+        /// Path to a specific receipt JSON file
+        #[arg(short, long)]
+        receipt: Option<PathBuf>,
+
+        /// Path or abstract name of kpclientd Unix domain socket
+        #[arg(short, long, default_value = "@katzenpost")]
+        socket: PathBuf,
+
+        /// Removable media spool directory (defaults to <usb_root>/spool)
+        #[arg(long)]
+        spool_dir: Option<PathBuf>,
     },
 
     /// Offline Vault mode: compose, encrypt Sphinx packets & decrypt inbound replies
@@ -62,7 +86,7 @@ enum Commands {
         action: VaultCommands,
     },
 
-    /// Blind Network Spooler: dispatch packets to Katzenpost and poll Pigeonhole
+    /// QR and file spool demonstration; synthetic packets are not transmitted
     #[command(alias = "hot")]
     Spooler {
         #[command(subcommand)]
@@ -279,8 +303,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Status => {
             println!("    /\\_/\\   ");
-            println!("   ( o.o )   KATZENPOST AIR-GAPPED: SCHRÖDINGER MIXNET CLIENT");
-            println!("    > ^ <    Superposition: [Vault | Spooler] • Post-Quantum Resilient");
+            println!("   ( o.o )   KATZENPOST OFFLINE WORKFLOW PROTOTYPE");
+            println!("    > ^ <    Synthetic packets are not sent to the live mixnet");
             println!("=======================================================");
             println!(" ENVIRONMENT & KERNEL AIR-GAP STATUS                  ");
             println!("=======================================================");
@@ -296,33 +320,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("[!] Kernel Sandbox error: {}", e);
                 }
             }
-            let net_blocked = is_network_blocked();
-            println!(
-                "[i] Network Socket Status: {}",
-                if net_blocked {
-                    "BLOCKED / DISCONNECTED (Safe for Vault operations)"
-                } else {
-                    "CONNECTED (Available for Spooler operations)"
-                }
-            );
+            println!("[i] Physical air gap requires independent verification of the device and radios.");
             println!("=======================================================");
 
             let mbox_path = default_vault_mailbox_path();
-            if let Ok(mbox) = VaultMailbox::new_or_load(&mbox_path) {
-                println!(" PIGEONHOLE ASYNC MAILBOX & QUANTUM STATE              ");
-                println!("=======================================================");
-                println!("[✓] Sovereign Box ID: {}", mbox.identity.box_id_hex);
-                println!("[i] Messages stored in Vault: {}", mbox.messages.len());
-                let unread = mbox.messages.iter().filter(|m| m.quantum_state.contains("Superposition")).count();
-                println!("[i] In quantum superposition (unread): {}", unread);
-                println!("=======================================================");
-            }
-
-            println!(" OPSEC SECRECY SCORE MODEL                            ");
+            println!(" Vault path: {}", mbox_path.display());
+            println!(" Vault file exists: {}", mbox_path.exists());
+            println!("[i] Status does not unlock or create a vault.");
             println!("=======================================================");
-            println!("⭐ ⭐ ⭐      (70%) : Standard isolation (Air-gap / Kernel namespace + Physical keyboard)");
-            println!("⭐ ⭐ ⭐ ⭐ ⭐ (100%): Maximum quantum shielding (Partitioned virtual keyboard anti-keylogger)");
-            println!("[i] OPSEC Note: The partitioned virtual keyboard is optional, but mitigates USB keyloggers, static mouse coordinates, and acoustic leakage.");
+
+            println!(" SECURITY LIMITATIONS                                  ");
+            println!("=======================================================");
+            println!("[i] No numerical secrecy score is a security guarantee.");
+            println!("[i] A virtual keyboard does not establish physical air-gap isolation.");
             println!("=======================================================");
         }
 
@@ -334,12 +344,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Standalone {
             message,
             target,
-            socket,
             spool_dir,
             sandbox,
         } => {
             println!("=======================================================");
-            println!(" KATZENPOST CLIENT: STANDALONE ALL-IN-ONE MODE        ");
+            println!(" KATZENPOST LOCAL PACKET DEMONSTRATION                  ");
             println!("=======================================================");
 
             let payload_text = message.unwrap_or_else(|| {
@@ -357,10 +366,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("[✓] Network isolation active: {}", desc);
                     }
                     Ok(SandboxStatus::Restricted(desc)) => {
-                        println!("[i] Restricted sandbox mode: {}", desc);
+                        return Err(format!("Network isolation unavailable: {desc}").into());
                     }
                     Err(e) => {
-                        eprintln!("[!] Failed to isolate network: {}", e);
+                        return Err(format!("Network isolation failed: {e}").into());
                     }
                 }
             }
@@ -370,22 +379,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sphinx_packet = SphinxEngine::build_packet(&path, &target, payload_text.as_bytes())?;
             let packet_bytes = sphinx_packet.raw_bytes;
 
-            println!("[✓] Sphinx packet constructed (1024 bytes onion encrypted)");
+            println!("[i] Synthetic 1024-byte packet constructed for offline testing only");
 
-            if let Some(ref dir) = spool_dir {
-                let outbox = dir.join("outbox");
-                fs::create_dir_all(&outbox)?;
-                let file_path = outbox.join(format!("packet_{}.spx", rand::thread_rng().gen::<u32>()));
-                fs::write(&file_path, &packet_bytes)?;
-                println!("[✓] Packet queued to removable media spool: {:?}", file_path);
+            // Record in portable VaultMailbox (<usb_root>/vault_data/vault_mailbox.json)
+            let mbox_path = default_vault_mailbox_path();
+            let mut mbox = VaultMailbox::new_or_load(&mbox_path)?;
+            let recip_hex = mbox.identity.box_id_hex.clone();
+            mbox.deposit_draft(&recip_hex, &payload_text, 0, "Standalone CLI")?;
+            mbox.save(&mbox_path)?;
+            println!("[✓] Message recorded in encrypted vault: {}", mbox_path.display());
+
+            // Persist a private demo artifact for local QR tests.
+            let active_spool = spool_dir.unwrap_or_else(default_spool_dir);
+            let outbox = active_spool.join("outbox");
+
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let rand_id: u16 = rand::thread_rng().gen();
+            let file_name = format!("packet_{}_{:04x}.demo", ts, rand_id);
+            let file_path = outbox.join(&file_name);
+            write_private_atomic(&file_path, &packet_bytes)?;
+            println!(
+                "[i] Demo packet saved to USB spool: {}",
+                file_path.display()
+            );
+
+            if sandbox {
                 println!(
-                    "[i] OPSEC Tip: To prevent host-to-media writes, use SD cards with physical write-lock \
-                     sliders or bridge via animated optical QR diodes."
+                    "[i] Sandbox active (offline mode). Packet stays queued at: {}",
+                    file_path.display()
                 );
+                return Ok(());
             }
 
-            println!("[*] Forwarding to local gateway ({:?})...", socket);
-            forward_packet_to_gateway(&packet_bytes, &socket, None);
+            println!("[i] Synthetic consensus packet retained locally. Live dispatch is disabled.");
+
+        }
+
+        Commands::Receive {
+            read_cap,
+            index,
+            receipt,
+            socket,
+            spool_dir,
+        } => {
+            let active_spool = spool_dir.unwrap_or_else(default_spool_dir);
+            execute_receive(
+                read_cap.as_deref(),
+                index.as_deref(),
+                receipt.as_deref(),
+                &socket,
+                &active_spool,
+            )?;
         }
 
         Commands::Vault { action } => match action {
@@ -644,18 +691,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let packet = sphinx_packet.raw_bytes;
 
                 println!("=======================================================");
-                println!(" KATZENPOST VAULT: SPHINX PACKET ASSEMBLED             ");
+                println!(" KATZENPOST VAULT: SYNTHETIC PACKET DEMO               ");
                 println!("=======================================================");
-                println!("State:           OFFLINE (Air-Gapped Vault)");
+                println!("State:           DEMO (physical isolation not verified)");
                 println!("Mix Route:       {} -> {} -> {}", path[0].id, path[1].id, path[2].id);
                 println!("Target Service:  {}", target);
-                println!("Size:            {} bytes (guaranteed Sphinx invariant)", packet.len());
+                println!("Size:            {} bytes (synthetic packet)", packet.len());
 
                 if let Some(ref dir) = spool_dir {
                     let outbox = dir.join("outbox");
-                    fs::create_dir_all(&outbox)?;
-                    let file_path = outbox.join(format!("packet_{}.spx", rand::thread_rng().gen::<u32>()));
-                    fs::write(&file_path, &packet)?;
+                    let file_path = outbox.join(format!("packet_{}.demo", rand::thread_rng().gen::<u32>()));
+                    write_private_atomic(&file_path, &packet)?;
                     println!("\n[✓] Packet written to removable spool: {:?}", file_path);
                     println!(
                         "[i] OPSEC Tip: To prevent host-to-media writes, use SD cards with physical write-lock \
@@ -666,32 +712,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Default: Display terminal QR carousel
                 let seq_id = rand::thread_rng().gen::<u32>();
-                let chunks = fragment_payload(MsgType::SphinxOut, seq_id, &packet, DEFAULT_CHUNK_SIZE);
+                let chunks = fragment_payload(MsgType::SphinxOut, seq_id, &packet, DEFAULT_CHUNK_SIZE)?;
 
                 println!("\n[>] Optical transmission: carousel of {} QR chunks...", chunks.len());
                 run_qr_carousel(&chunks, delay_ms, loops, step, raw)?;
             }
 
             VaultCommands::Receive { spool_dir } => {
-                let inbox = spool_dir.join("inbox");
-                if !inbox.exists() {
-                    println!("[i] No inbound messages: folder {:?} is empty.", inbox);
-                    return Ok(());
-                }
-                let entries = fs::read_dir(&inbox)?;
-                let mut count = 0;
-                for entry in entries {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("inbound") {
-                        let data = fs::read(&path)?;
-                        println!("[✓] Inbound packet detected: {:?} ({} bytes)", path.file_name().unwrap(), data.len());
-                        count += 1;
-                    }
-                }
-                if count == 0 {
-                    println!("[i] No .inbound files found in {:?}", inbox);
-                }
+                let active_spool = if spool_dir == Path::new("/tmp/katzen-spool") {
+                    default_spool_dir()
+                } else {
+                    spool_dir
+                };
+                execute_receive(
+                    None,
+                    None,
+                    None,
+                    Path::new("@katzenpost"),
+                    &active_spool,
+                )?;
             }
 
             VaultCommands::DelegateSurb { mailbox } => {
@@ -715,34 +754,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
 
         Commands::Spooler { action } => match action {
-            SpoolerCommands::Run {
-                spool_dir,
-                socket,
-                tcp,
-            } => {
-                let outbox = spool_dir.join("outbox");
-                fs::create_dir_all(&outbox)?;
-                println!("=======================================================");
-                println!(" KATZENPOST SPOOLER: TRANSPORT QUEUE WATCHER           ");
-                println!("=======================================================");
-                println!("Watching spool directory: {:?}", outbox);
-                println!("Gateway socket:           {:?}", socket);
-                println!("[i] Waiting for .spx packets to forward...");
-
-                loop {
-                    let entries = fs::read_dir(&outbox)?;
-                    for entry in entries {
-                        let entry = entry?;
-                        let path = entry.path();
-                        if path.extension().and_then(|s| s.to_str()) == Some("spx") {
-                            let packet = fs::read(&path)?;
-                            println!("\n[*] Packet ready for transport: {:?} ({} bytes)", path.file_name().unwrap(), packet.len());
-                            forward_packet_to_gateway(&packet, &socket, tcp.as_deref());
-                            let _ = fs::remove_file(path);
-                        }
-                    }
-                    sleep(Duration::from_millis(500));
-                }
+            SpoolerCommands::Run { .. } => {
+                return Err("Live spooler disabled: synthetic packets are incompatible with kpclientd".into());
             }
 
             SpoolerCommands::Scan {
@@ -765,7 +778,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             SpoolerCommands::SendReply { data, seq_id } => {
-                let chunks = fragment_payload(MsgType::ReplyIn, seq_id, data.as_bytes(), DEFAULT_CHUNK_SIZE);
+                let chunks = fragment_payload(MsgType::ReplyIn, seq_id, data.as_bytes(), DEFAULT_CHUNK_SIZE)?;
                 println!("[*] Projecting encrypted reply via {} QR chunks...", chunks.len());
                 run_qr_carousel(&chunks, 600, 0, false, false)?;
             }
@@ -775,42 +788,173 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn execute_receive(
+    read_cap_opt: Option<&str>,
+    index_opt: Option<&str>,
+    receipt_path_opt: Option<&Path>,
+    socket_path: &Path,
+    spool_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=======================================================");
+    println!(" KATZENPOST CLIENT: PIGEONHOLE MIXNET RECEIVER         ");
+    println!("=======================================================");
+
+    let inbox = spool_dir.join("inbox");
+    let sent_dir = spool_dir.join("sent");
+
+    let default_receipt_path = sent_dir.join("pigeonhole_box_latest.json");
+    let active_receipt_path = receipt_path_opt.unwrap_or(&default_receipt_path);
+
+    let resolved: Option<(String, String, Option<PigeonholeBoxReceipt>)> =
+        if let (Some(rc), Some(idx)) = (read_cap_opt, index_opt) {
+            Some((rc.trim().to_string(), idx.trim().to_string(), None))
+        } else if active_receipt_path.exists() {
+            let raw = fs::read_to_string(active_receipt_path)?;
+            let parsed: PigeonholeBoxReceipt = serde_json::from_str(&raw)?;
+            Some((
+                parsed.read_cap_hex.clone(),
+                parsed.message_box_index_hex.clone(),
+                Some(parsed),
+            ))
+        } else {
+            None
+        };
+
+    if let Some((rc_hex, idx_hex, receipt_meta)) = resolved {
+        if let Some(ref meta) = receipt_meta {
+            println!("[*] Loaded BACAP Capability Receipt: {}", active_receipt_path.display());
+            println!(
+                "    • Courier Replica : {}...",
+                &meta.courier_node_hex[..16.min(meta.courier_node_hex.len())]
+            );
+            println!(
+                "    • Envelope Hash   : {}...",
+                &meta.envelope_hash_hex[..32.min(meta.envelope_hash_hex.len())]
+            );
+            println!(
+                "    • Box Index       : {}...",
+                &meta.message_box_index_hex[..32.min(meta.message_box_index_hex.len())]
+            );
+        }
+
+        let rc_bytes = hex::decode(&rc_hex)?;
+        let idx_bytes = hex::decode(&idx_hex)?;
+
+        match fetch_pigeonhole_box(&rc_bytes, &idx_bytes, socket_path, None) {
+            Ok((plaintext_bytes, live_epoch)) => {
+                let plaintext = String::from_utf8_lossy(&plaintext_bytes).to_string();
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                // Persist only in the encrypted vault; never write an inbound plaintext file.
+                let mbox_path = default_vault_mailbox_path();
+                {
+                    let mut mbox = VaultMailbox::new_or_load(&mbox_path)?;
+                    let mut updated_existing = false;
+                    for m in mbox.messages.iter_mut() {
+                        if m.plaintext == plaintext {
+                            m.quantum_state =
+                                "Decoherence: Retrieved & Decrypted from Live Mixnet Replica"
+                                    .to_string();
+                            m.epoch = live_epoch;
+                            updated_existing = true;
+                        }
+                    }
+                    if !updated_existing {
+                        let mut id_seed = [0u8; 8];
+                        rand::thread_rng().fill(&mut id_seed);
+                        mbox.messages.push(MailboxMessage {
+                            id: hex::encode(id_seed),
+                            sender: idx_hex[..32.min(idx_hex.len())].to_string(),
+                            recipient: mbox.identity.box_id_hex.clone(),
+                            epoch: live_epoch,
+                            plaintext: plaintext.clone(),
+                            timestamp: ts,
+                            direction: MessageDirection::Inbound,
+                            quantum_state:
+                                "Decoherence: Retrieved & Decrypted from Live Mixnet Replica"
+                                    .to_string(),
+                            secrecy_stars: 5,
+                            input_method: "Pigeonhole BACAP Mixnet SURB".to_string(),
+                        });
+                    }
+                    mbox.save(&mbox_path)?;
+                }
+
+                println!("=======================================================");
+                println!("[✓] MESSAGE RETRIEVED & DECRYPTED FROM KATZENPOST MIXNET");
+                println!("=======================================================");
+                println!("    • Consensus Epoch : {}", live_epoch);
+                println!("    • Quantum State   : Decoherence (Plaintext Observed)");
+                println!("    • Saved in encrypted vault: {}", mbox_path.display());
+                println!("-------------------------------------------------------");
+                println!("    DECRYPTED PAYLOAD : {}", plaintext);
+                println!("=======================================================");
+                return Ok(());
+            }
+            Err(e) => {
+                println!("[!] Live mixnet retrieval error: {}", e);
+            }
+        }
+    } else {
+        println!(
+            "[i] No BACAP receipt found at {}. Checking local inbox folder...",
+            active_receipt_path.display()
+        );
+    }
+
+    if inbox.exists() {
+        println!("[!] Legacy plaintext inbox exists at {}; review and migrate it separately.", inbox.display());
+    }
+    Ok(())
+}
+
+
 fn forward_packet_to_gateway(payload: &[u8], socket_path: &Path, tcp_addr: Option<&str>) {
-    if socket_path.exists() {
-        println!("[*] Connecting to kpclientd via Unix domain socket ({:?})...", socket_path);
-        match UnixStream::connect(socket_path) {
-            Ok(mut stream) => {
-                if let Err(e) = stream.write_all(payload) {
-                    eprintln!("[-] Socket transmission error: {}", e);
-                } else {
-                    println!("[✓] 1024-byte Sphinx packet delivered to gateway successfully!");
-                    return;
+    println!("\n=======================================================");
+    println!(" [SUCCESS] SPHINX PACKET REASSEMBLED OVER AIR-GAP!");
+    println!("=======================================================");
+    println!("Assembled Size:  {} bytes", payload.len());
+
+    if payload.len() != 1024 {
+        eprintln!("[-] Unexpected packet size {}; refusing dispatch", payload.len());
+        return;
+    }
+
+    println!("[*] Attempting live mixnet dispatch via kpclientd...");
+    match katzen_airgapped::thinclient::dispatch_via_kpclientd(payload, "courier", socket_path, tcp_addr) {
+        Ok(receipt) => {
+            println!("[✓] Live mixnet dispatch confirmed by kpclientd!");
+            println!("    • Epoch           : {}", receipt.epoch);
+            println!("    • Destination     : {}", receipt.destination_service);
+            println!("    • Forward Route   : {}", receipt.forward_route.join(" -> "));
+            println!("    • Return Route    : {}", receipt.return_route.join(" -> "));
+            println!("    • Reply ETA       : {} ms", receipt.reply_eta_ms);
+
+            let sent_dir = default_spool_dir().join("sent");
+            if let Ok(_) = std::fs::create_dir_all(&sent_dir) {
+                let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let receipt_file = sent_dir.join(format!("receipt_{}.json", ts));
+                if let Ok(json_bytes) = serde_json::to_vec_pretty(&receipt) {
+                    let _ = write_private_atomic(&receipt_file, &json_bytes);
+                    println!("[i] Delivery receipt recorded: {}", receipt_file.display());
                 }
             }
-            Err(e) => {
-                eprintln!("[-] Failed to connect to kpclientd socket: {}", e);
+        }
+        Err(err) => {
+            println!("[-] kpclientd dispatch failed or daemon offline: {}", err);
+            println!("[*] Spooling packet to outbox for deferred transmission...");
+            let outbox = default_spool_dir().join("outbox");
+            if let Ok(_) = std::fs::create_dir_all(&outbox) {
+                let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let spool_file = outbox.join(format!("sphinx_outbound_{}.bin", ts));
+                if let Ok(_) = write_private_atomic(&spool_file, payload) {
+                    println!("[✓] Packet durably spooled to: {}", spool_file.display());
+                }
             }
         }
     }
-
-    if let Some(addr) = tcp_addr {
-        println!("[*] Connecting to kpclientd via TCP ({})...", addr);
-        match TcpStream::connect(addr) {
-            Ok(mut stream) => {
-                if let Err(e) = stream.write_all(payload) {
-                    eprintln!("[-] TCP transmission error: {}", e);
-                } else {
-                    println!("[✓] Sphinx packet delivered via TCP successfully!");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("[-] Failed to connect to TCP endpoint {}: {}", addr, e);
-            }
-        }
-    }
-
-    println!("[i] Local gateway offline. Packet ready for mixnet dispatch.");
 }
 
 fn run_qr_carousel(
