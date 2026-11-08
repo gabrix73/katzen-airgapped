@@ -4,12 +4,17 @@ pub mod identicon;
 pub mod pigeonhole;
 pub mod sandbox;
 pub mod sphinx;
+pub mod thinclient;
 pub mod ui;
 pub mod virtual_keyboard;
 
 pub const MAGIC: [u8; 4] = *b"KPAG";
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const DEFAULT_CHUNK_SIZE: usize = 90; // Compact Version 4-5 QR code: ~37x20 chars in terminal
+pub const MAX_QR_CHUNK_SIZE: usize = 1024;
+pub const MAX_QR_PARTS: usize = 256;
+pub const MAX_QR_MESSAGE_SIZE: usize = 64 * 1024;
+pub const MAX_PENDING_SEQUENCES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -96,6 +101,12 @@ impl KpagChunk {
         let part_index = u16::from_be_bytes([bytes[10], bytes[11]]);
         let total_parts = u16::from_be_bytes([bytes[12], bytes[13]]);
         let payload_len = u16::from_be_bytes([bytes[14], bytes[15]]) as usize;
+        if total_parts == 0 || total_parts as usize > MAX_QR_PARTS || part_index >= total_parts {
+            return Err("Invalid QR part index or count".into());
+        }
+        if payload_len > MAX_QR_CHUNK_SIZE {
+            return Err("QR chunk exceeds size limit".into());
+        }
 
         if bytes.len() != 16 + payload_len + 4 {
             return Err(format!(
@@ -157,7 +168,10 @@ pub fn fragment_payload(
     seq_id: u32,
     payload: &[u8],
     chunk_size: usize,
-) -> Vec<KpagChunk> {
+) -> Result<Vec<KpagChunk>, String> {
+    if chunk_size == 0 || chunk_size > MAX_QR_CHUNK_SIZE || payload.len() > MAX_QR_MESSAGE_SIZE {
+        return Err("Invalid QR chunk or message size".into());
+    }
     if payload.is_empty() {
         let chunk = KpagChunk {
             header: KpagHeader {
@@ -172,13 +186,16 @@ pub fn fragment_payload(
             data: Vec::new(),
             checksum: [0; 4],
         };
-        return vec![chunk];
+        return Ok(vec![chunk]);
     }
 
     let chunks: Vec<&[u8]> = payload.chunks(chunk_size).collect();
+    if chunks.len() > MAX_QR_PARTS {
+        return Err("QR message requires too many parts".into());
+    }
     let total_parts = chunks.len() as u16;
 
-    chunks
+    Ok(chunks
         .into_iter()
         .enumerate()
         .map(|(i, slice)| {
@@ -200,7 +217,7 @@ pub fn fragment_payload(
             chunk.checksum.copy_from_slice(&bytes[bytes.len() - 4..]);
             chunk
         })
-        .collect()
+        .collect())
 }
 
 pub struct Reassembler {
@@ -219,6 +236,12 @@ impl Reassembler {
         let total = chunk.header.total_parts;
         let idx = chunk.header.part_index;
         let mtype = chunk.header.msg_type;
+        if total == 0 || total as usize > MAX_QR_PARTS || idx >= total || chunk.data.len() > MAX_QR_CHUNK_SIZE || chunk.header.payload_len as usize != chunk.data.len() {
+            return Err("Invalid QR chunk metadata".into());
+        }
+        if !self.pending.contains_key(&seq) && self.pending.len() >= MAX_PENDING_SEQUENCES {
+            return Err("Too many pending QR sequences".into());
+        }
 
         let entry = self
             .pending
@@ -232,7 +255,17 @@ impl Reassembler {
             ));
         }
 
-        entry.2.insert(idx, chunk.data);
+        if let Some(previous) = entry.2.get(&idx) {
+            if previous != &chunk.data {
+                return Err("Conflicting duplicate QR part".into());
+            }
+        } else {
+            let current_size: usize = entry.2.values().map(Vec::len).sum();
+            if current_size + chunk.data.len() > MAX_QR_MESSAGE_SIZE {
+                return Err("Reassembled QR message exceeds size limit".into());
+            }
+            entry.2.insert(idx, chunk.data);
+        }
 
         if entry.2.len() == total as usize {
             let mut full_payload = Vec::new();
@@ -273,7 +306,7 @@ mod tests {
     #[test]
     fn test_chunk_encode_decode() {
         let data = b"Sphinx packet payload 1024 bytes dummy test";
-        let chunks = fragment_payload(MsgType::SphinxOut, 42, data, 16);
+        let chunks = fragment_payload(MsgType::SphinxOut, 42, data, 16).unwrap();
         assert_eq!(chunks.len(), 3);
 
         let mut reassembler = Reassembler::new();
@@ -291,5 +324,29 @@ mod tests {
         assert_eq!(mtype, MsgType::SphinxOut);
         assert_eq!(seq, 42);
         assert_eq!(reassembled, data);
+    }
+
+    #[test]
+    fn qr_limits_and_conflicting_parts() {
+        assert!(fragment_payload(MsgType::SphinxOut, 1, b"x", 0).is_err());
+        assert!(fragment_payload(MsgType::SphinxOut, 1, &vec![0; MAX_QR_MESSAGE_SIZE + 1], 90).is_err());
+        assert!(fragment_payload(MsgType::SphinxOut, 1, &vec![0; 300], 1).is_err());
+        let parts = fragment_payload(MsgType::SphinxOut, 7, b"abcd", 2).unwrap();
+        let mut reassembler = Reassembler::new();
+        assert!(reassembler.add_chunk(parts[0].clone()).unwrap().is_none());
+        let mut changed = parts[0].clone();
+        changed.data[0] ^= 1;
+        assert!(reassembler.add_chunk(changed).is_err());
+        assert!(reassembler.add_chunk(parts[1].clone()).unwrap().is_some());
+        let mut invalid = parts[0].clone();
+        invalid.header.part_index = invalid.header.total_parts;
+        assert!(KpagChunk::decode_bytes(&invalid.encode_bytes()).is_err());
+        let mut pending = Reassembler::new();
+        for seq in 0..MAX_PENDING_SEQUENCES as u32 {
+            let first = fragment_payload(MsgType::SphinxOut, seq, b"xy", 1).unwrap().remove(0);
+            assert!(pending.add_chunk(first).unwrap().is_none());
+        }
+        let extra = fragment_payload(MsgType::SphinxOut, 999, b"xy", 1).unwrap().remove(0);
+        assert!(pending.add_chunk(extra).is_err());
     }
 }

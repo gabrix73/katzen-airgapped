@@ -8,7 +8,7 @@ use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "katzen-cold")]
-#[command(about = "Katzenpost Air-Gapped Cold Terminal (Offline Sphinx & SURB Manager)")]
+#[command(about = "Offline QR and synthetic packet test terminal; no live mixnet delivery")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -16,7 +16,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Construct a 3-hop Sphinx packet offline and broadcast via animated QR
+    /// Construct a synthetic packet for local QR testing only
     Send {
         /// Message text to send through mixnet
         #[arg(short, long)]
@@ -91,15 +91,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Select 3 stratified hops uniformly at random from offline PKI topology
             let path = topology.select_path()?;
             println!("=======================================================");
-            println!(" KATZENPOST COLD TERMINAL: REAL SPHINX PACKET ASSEMBLY ");
+            println!(" KATZENPOST COLD TERMINAL: SYNTHETIC PACKET DEMO      ");
             println!("=======================================================");
-            println!("Status:          OFFLINE (Air-gapped)");
+            println!("Status:          DEMO (physical isolation not verified)");
             println!("Consensus Epoch: {}", topology.epoch);
             println!("Mixnet Path:     {} -> {} -> {}", path[0].id, path[1].id, path[2].id);
             println!("Target Service:  {}", target);
             println!("Payload Text:    {} bytes", payload_bytes.len());
 
-            // Build mathematically complete Sphinx Onion Packet (1024 bytes)
+            // Build a 1024-byte packet using the synthetic topology for QR tests.
             let sphinx_packet = SphinxEngine::build_packet(&path, &target, &payload_bytes)?;
             let alpha = hex::encode(sphinx_packet.alpha());
 
@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 seq_id,
                 &sphinx_packet.raw_bytes,
                 DEFAULT_CHUNK_SIZE,
-            );
+            )?;
 
             if raw {
                 for (i, chunk) in chunks.iter().enumerate() {
@@ -184,17 +184,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 seq_id,
                 surb_token_json.as_bytes(),
                 DEFAULT_CHUNK_SIZE,
-            );
+            )?;
 
             let qr_str = chunks[0].to_qr_string();
             let rendered = render_qr_terminal(&qr_str).unwrap();
 
             println!("=======================================================");
-            println!(" KATZENPOST COLD TERMINAL: REAL SURB GENERATION ");
+            println!(" KATZENPOST COLD TERMINAL: SURB DEMONSTRATION    ");
             println!("=======================================================");
             println!("SURB ID:         {}", surb.surb_id);
             println!("First Hop:       {}", surb.first_hop_address);
-            println!("Local Secret:    {}... (stored offline in client DB)", &surb.k_surb_hex[0..16]);
+            println!("Local Secret:    held in memory only; no durable reply state exists");
             println!("Epoch Expiry:    {}", surb.epoch_expiry);
             println!("{}", rendered);
             println!("Token: {}", qr_str);

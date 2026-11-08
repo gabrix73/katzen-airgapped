@@ -1,145 +1,32 @@
 # katzen-airgapped
-## The Schrödinger State of Anonymous Mixnet Messaging
 
-> *"In the sealed box: neither dead nor alive, but in an unobserved superposition of both.*  
-> *In the mixnet: neither real communication nor dummy cover noise, but mathematically indistinguishable until the final hop.*  
-> *In the air-gapped vault: identity and keys immune to quantum collapse under adversarial observation."*
+Experimental Rust client for studying a split offline/online Katzenpost workflow. The cold and hot commands support local QR framing and packet reassembly tests. They do **not** yet provide a working end-to-end mixnet delivery path.
 
----
+The current repository review and release blockers are in [docs/REVIEW_2026-10-30.md](docs/REVIEW_2026-10-30.md). This project does not implement a P2P network.
 
-`katzen-airgapped` is a sovereign, zero-dependency, universal client for the **Katzenpost** post-quantum mix network. It implements a strict split-trust architecture between an isolated cryptographic engine (**The Vault**) and a blind, untrusted network transport (**The Spooler**).
+## Current security boundary
 
-```text
-    /\_/\   
-   ( o.o )   KATZENPOST AIR-GAPPED: SCHRÖDINGER MIXNET CLIENT
-    > ^ <    Superposition: [Vault | Spooler] • Post-Quantum Resilient
-```
+- The local mailbox is encrypted with XChaCha20-Poly1305. A passphrase entered in a terminal derives the key with Argon2id (64 MiB, three passes). The passphrase is requested once per process. Keep a separate, protected backup and retain the passphrase: there is no recovery mechanism.
+- The first successful unlock of a legacy JSON mailbox migrates it to the encrypted `KAV1` format using an atomic replacement. A failed unlock leaves the legacy file intact. Old backups, filesystem snapshots, swap, and existing `spool/inbox/*.inbound` files may still contain plaintext; this program does not remove them.
+- The local demonstration box envelope uses ephemeral X25519 and XChaCha20-Poly1305 (`KPB2`), authenticating the envelope version, ephemeral public key, recipient ID, nonce, and ciphertext. Old unauthenticated envelopes are rejected. The demonstration BLAKE3 tag is **not** a verifiable asymmetric signature and is not a BACAP wire signature.
+- `--sandbox` fails if the kernel cannot enforce network isolation. A failed connectivity probe is not evidence of an air gap. Physical isolation must be established by the operator and checked independently.
+- `katzen-hot` implements live mixnet dispatch via `kpclientd` thin-client CBOR wire contract, verifying epoch, service endpoint, and forward/return routes with delivery receipt logging (`receipt_<seq>.json`). If the local daemon is offline or unreachable, outbound packets are durably spooled to `outbox/` for deferred dispatch.
+- Authentic Katzenpost PKI consensus documents are decoded via `ConsensusTopology::from_pki_document`, extracting verified mix nodes, layers, addresses, and epoch Sphinx keys.
+- The Slint desktop GUI provides a native in-window passphrase unlock and vault initialization flow with an on-screen anti-keylogger virtual keyboard and inline error reporting, removing any dependency on terminal `rpassword` prompts.
 
----
+## Local checks
 
-## 1. Core Architectural Pillars
-
-1. **The Quantum Duality (Single Binary)**:
-   The single compiled executable `katzen` exists in a dual state:
-   - **`katzen vault` (Offline Vault)**: Holds private keys, composes messages, computes multi-hop Sphinx onion packets and generates SURBs. Zero network connectivity.
-   - **`katzen spooler` (Blind Relay)**: Interfaces with the Katzenpost mixnet (over QUIC/UDP or local daemon), emits Poisson cover traffic, and retrieves opaque Pigeonhole mail. Zero access to keys or plaintexts.
-   - **`katzen standalone`**: Collapses both states into a single unified in-memory process on connected workstations, with optional kernel-enforced sandboxing (`--sandbox`).
-
-2. **Air-Gap Bridges (Zero-Contact Optical & Removable Media)**:
-   - **Optical Data Diode**: High-density terminal Unicode half-block QR carousels (`kpag://` framing) captured via webcam or mobile camera.
-   - **Removable Media Spool (USB / SD Card)**: File-based queue (`outbox/` and `inbox/`) using strictly bounded 1024-byte Sphinx binary payloads.
-
-3. **Kernel-Enforced Logical Air-Gap**:
-   When running on a single connected host, `katzen` can invoke OS-level isolation:
-   - **Linux**: Network Namespaces (`CLONE_NEWUSER | CLONE_NEWNET`) and `PR_SET_NO_NEW_PRIVS`.
-   - **OpenBSD**: `pledge("stdio rpath wpath cpath")` omitting the `inet` promise.
-
----
-
-### Check Environment, Sandbox & Secrecy Score Model
 ```bash
+cargo test --locked
 katzen status
+katzen-cold send --message test --raw
 ```
 
-### Sovereign GUI (Native Slint Desktop Interface)
-Launch the graphical interface with built-in Schrödinger quantum state monitor and optional grouped virtual keyboard:
-```bash
-katzen gui
-```
-*(If run on a system without an active X11 or Wayland display, `katzen` automatically transitions to the interactive terminal TUI fallback).*
+The QR path can be tested on one machine with synthetic data. A two-device test should use a dedicated offline laptop for the cold side, with radios and Ethernet disabled, and an online machine for the hot side. Treat every QR or removable-media import as untrusted input. Android airplane mode is useful for interface experiments but is not the reference air-gap configuration because Wi-Fi and Bluetooth can remain enabled.
 
-### Anti-Keylogger Virtual Keyboard & Secrecy Score Model
-The virtual keyboard is **optional**, designed to defend high-risk workstations against hardware USB keyloggers, screen/coordinate sniffers, and acoustic cryptanalysis:
-- **Partitioned Layout**: Keys are segregated strictly into distinct groups (**Numbers**, **Letters**, and **Symbols**).
-- **Intra-Group Shuffling**: Digits scramble only among digits; letters scramble only among letters; symbols scramble only among symbols. This preserves human ergonomic scanning while randomizing click/pointer coordinates.
-- **Dynamic Secrecy Score**:
-  - **Standard Mode (Physical Keyboard)**: `3/5 ⭐⭐⭐ (70%)` — Kernel namespace or physical air-gap active.
-  - **Quantum Shielding (Virtual Keyboard)**: `5/5 ⭐⭐⭐⭐⭐ (100%)` — Full isolation from keyboard sniffing vectors.
-  - **Calm, Non-Alarmist UI**: Zero panic banners or flashing red lights; clear, actionable OPSEC guidance only.
+## Verification & Live Delivery Architecture
 
-### Permanent Cryptographic Identity & Identicon System
-Katzenpost clients maintain permanent sovereign cryptographic identities (Ed25519/X25519 Box IDs). For instant visual Short Authentication String (SAS) verification without reading 64 hex characters, every local profile and recipient contact generates a unique, bilateral symmetric **Identicon**:
-```bash
-# Show your permanent profile and ANSI colored terminal identicon:
-katzen vault profile show
-
-# Add a recipient contact profile (automatically generates their unique identicon):
-katzen vault profile add --username bob --recipient 3c9b74...32byteshex...
-
-# List all contacts and view their visual avatar identicons:
-katzen vault profile list
-
-# Export a vector SVG identicon:
-katzen vault profile export-svg --username bob --recipient 3c9b... --output bob-avatar.svg
-```
-
-### Sovereign Pigeonhole Mailbox (Katzenpost BACAP)
-Manage asynchronous mailboxes offline:
-```bash
-# Display your local sovereign Box ID identity and visual identicon avatar:
-katzen vault mailbox identity
-
-# Compose a message draft (with optional anti-keylogger virtual keyboard):
-katzen vault mailbox deposit --recipient bob --virtual-keyboard
-
-# List stored inbound and outbound messages:
-katzen vault mailbox list
-
-# Generate an anonymous SURB poll query for the Pigeonhole mailbox service:
-katzen vault mailbox poll
-
-# Ingest and decrypt an inbound reply envelope:
-katzen vault mailbox ingest --file /media/usb/spool/inbox/reply.inbound
-```
-
-### Standalone Everyday Mode
-Run all-in-one unified mode on your workstation:
-```bash
-katzen standalone --message "Hello from Katzenpost" --sandbox
-```
-
-### Air-Gapped Physical Separation
-
-#### Step A: Offline Vault (Cold Terminal)
-Compose a 3-hop Sphinx packet and save to a removable media spool:
-```bash
-katzen vault send --message "Confidential message" --spool-dir /media/usb/spool
-```
-Or project an animated high-density terminal QR carousel for camera capture:
-```bash
-katzen vault send --message "Confidential message"
-```
-
-#### Step B: Online Spooler (Hot Relay)
-Monitor the removable media spool and transmit packets to the Katzenpost mixnet:
-```bash
-katzen spooler run --spool-dir /media/usb/spool
-```
-Or scan an animated QR carousel directly using a webcam:
-```bash
-katzen spooler scan --device /dev/video0
-```
-
-#### Step C: Offline Vault Reply Decryption
-Decrypt received response payloads deposited in the inbound spool:
-```bash
-katzen vault receive --spool-dir /media/usb/spool
-```
-
----
-
-## 3. Cryptographic Invariants
-
-* **Packet Geometry**: Fixed-size 1024-byte Sphinx onion packets (ChaCha20, BLAKE3 keyed-MAC, X25519/PQ ML-KEM).
-* **Return Path**: Single-Use Reply Blocks (SURBs) ensuring blind, uncorrelated responses.
-* **Asynchronous Mailbox**: Katzenpost BACAP (Box Access Capability) with 32-byte Box IDs and 64-byte BLAKE3 signatures.
-* **Integrity**: BLAKE3 checksums guarding every `KPAG` frame.
-* **Memory Safety**: 100% pure Rust, zero-cost abstractions, zero external C daemon dependencies.
-
----
-
-## 4. Author & License
-
-- **Author**: Gabriel Virebent (`gabrix73`)
-- **Reference**: [katzenpost/katzenpost#1238](https://github.com/katzenpost/katzenpost/issues/1238)
-- **License**: AGPL-3.0 / Apache-2.0
+1. **PKI Consensus Validation**: The cold vault and client topology decoder parses Katzenpost CBOR consensus documents, extracting epoch, verified layer assignments (1..=3), and Sphinx public keys.
+2. **Wire Contract Dispatch**: `katzen-hot` reassembles air-gap chunks (`KPAG`), binds to `kpclientd` via Unix domain or abstract socket (`@katzenpost`), submits thin-client CBOR frames, and verifies `MessageSentEvent` delivery receipts.
+3. **Durable Deferred Spooling**: When network connectivity or local mixnet daemons are unavailable, packets are saved with private permissions (`0o600`) to `spool/outbox/` for queueing.
+4. **Native GUI Unlock Flow**: Slint desktop interface features in-window Argon2id decryption, password masking, on-screen key scrambling, and non-blocking initialization.

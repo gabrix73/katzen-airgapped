@@ -1,12 +1,12 @@
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
-/// Partitioned / Grouped layout for Anti-Keylogger Virtual Keyboard
+/// Partitioned / grouped optional on-screen keyboard.
 ///
-/// Requirement:
-/// "disposizione random dei tasti ma senza mescolare lettere, numeri e simboli.
-/// i gruppi devono stare insieme per rendere la digitazione piu facile"
-/// "la tastiera virtuale resta opzionale, ma se utilizzata aumenta il tuo score di segretezza/sicurezza"
+/// Design principle:
+/// Key categories (numbers, letters, symbols) remain partitioned into distinct rows,
+/// but are shuffled within each partition to scramble mouse coordinate telemetry.
+/// This layout does not establish protection against malware or observation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VirtualKeyboardState {
     pub numbers: Vec<char>,
@@ -70,25 +70,23 @@ impl VirtualKeyboardState {
         }
     }
 
-    /// Calculate dynamic Secrecy / OPSEC score
-    /// Base: 70% (3/5 Stars - Air-gap/Namespace isolation)
-    /// With Virtual Keyboard: 100% (5/5 Stars - Full Quantum Keylogger Immunity)
+    /// Legacy report fields remain for compatibility; no security score is asserted.
     pub fn compute_secrecy_score(&self) -> SecrecyReport {
         if self.used_for_composition {
             SecrecyReport {
-                score_percentage: 100,
-                stars: 5,
-                shielding_level: "Quantum Shielding (Massima)".to_string(),
-                keylogger_protection: true,
-                opsec_note: "Tastiera virtuale raggruppata attiva: digitazione protetta da keylogger hardware USB, eavesdropping coordinate fisse e analisi acustica.".to_string(),
+                score_percentage: 0,
+                stars: 0,
+                shielding_level: "Virtual keyboard enabled".to_string(),
+                keylogger_protection: false,
+                opsec_note: "Virtual keyboard enabled. This does not protect against compromised software, screen capture, or pointer observation.".to_string(),
             }
         } else {
             SecrecyReport {
-                score_percentage: 70,
-                stars: 3,
-                shielding_level: "Standard (Isolamento Ambientale)".to_string(),
+                score_percentage: 0,
+                stars: 0,
+                shielding_level: "Physical keyboard enabled".to_string(),
                 keylogger_protection: false,
-                opsec_note: "Digitazione da tastiera fisica rilevata. Suggerimento OPSEC: attiva la tastiera virtuale per aumentare lo score a 5 stelle ⭐⭐⭐⭐⭐ ed eliminare il rischio di keylogger fisici o acustici.".to_string(),
+                opsec_note: "Physical keyboard enabled. Input method alone does not establish an air gap.".to_string(),
             }
         }
     }
@@ -142,14 +140,14 @@ mod tests {
     fn test_secrecy_score_boost() {
         let mut kbd = VirtualKeyboardState::new();
         let initial_score = kbd.compute_secrecy_score();
-        assert_eq!(initial_score.stars, 3);
-        assert_eq!(initial_score.score_percentage, 70);
+        assert_eq!(initial_score.stars, 0);
+        assert_eq!(initial_score.score_percentage, 0);
         assert_eq!(initial_score.keylogger_protection, false);
 
         kbd.used_for_composition = true;
         let boosted_score = kbd.compute_secrecy_score();
-        assert_eq!(boosted_score.stars, 5);
-        assert_eq!(boosted_score.score_percentage, 100);
-        assert_eq!(boosted_score.keylogger_protection, true);
+        assert_eq!(boosted_score.stars, 0);
+        assert_eq!(boosted_score.score_percentage, 0);
+        assert_eq!(boosted_score.keylogger_protection, false);
     }
 }

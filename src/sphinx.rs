@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use crate::thinclient::CborValue;
+
 pub const NUM_HOPS: usize = 3;
 pub const HOP_ROUTING_SIZE: usize = 64; // Routing command + Delay + flags + MAC
 pub const ROUTING_INFO_SIZE: usize = NUM_HOPS * HOP_ROUTING_SIZE; // 192 bytes
@@ -49,6 +51,144 @@ pub struct ConsensusTopology {
 }
 
 impl ConsensusTopology {
+    /// Parse and validate authentic MixNodes and layers from a Katzenpost PKI consensus CBOR document
+    pub fn from_pki_document(pki_bytes: &[u8]) -> Result<Self, String> {
+        let doc = CborValue::decode(pki_bytes)?;
+        let epoch = doc.get("Epoch").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        let mut nodes = Vec::new();
+
+        // 1. Primary Katzenpost consensus topology: Topology is an array of layers (array of arrays)
+        if let Some(topo_layers) = doc.get("Topology").and_then(|v| v.as_array()) {
+            for (layer_idx, layer_val) in topo_layers.iter().enumerate() {
+                let layer_num = (layer_idx + 1) as u8;
+                if let Some(layer_nodes) = layer_val.as_array() {
+                    for raw_node in layer_nodes {
+                        if let Some(desc) = Self::parse_mix_descriptor(raw_node, layer_num, epoch) {
+                            nodes.push(desc);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback / Alternative: flattened MixNodes list
+        if nodes.is_empty() {
+            if let Some(mix_nodes) = doc.get("MixNodes").and_then(|v| v.as_array()) {
+                for (idx, raw_node) in mix_nodes.iter().enumerate() {
+                    let fallback_layer = ((idx % NUM_HOPS) + 1) as u8;
+                    if let Some(desc) = Self::parse_mix_descriptor(raw_node, fallback_layer, epoch) {
+                        nodes.push(desc);
+                    }
+                }
+            }
+        }
+
+        if nodes.is_empty() {
+            return Err("PKI consensus document contains no valid mix nodes in topology".into());
+        }
+
+        // Verify that we have at least one node per layer required by Sphinx
+        for layer in 1..=(NUM_HOPS as u8) {
+            if !nodes.iter().any(|n| n.layer == layer) {
+                return Err(format!(
+                    "Incomplete topology from PKI: missing mix nodes in layer {}",
+                    layer
+                ));
+            }
+        }
+
+        Ok(Self { epoch, nodes })
+    }
+
+    fn parse_mix_descriptor(val: &CborValue, default_layer: u8, epoch: u64) -> Option<MixNodeDescriptor> {
+        let node_map_val = if let Some(bytes) = val.as_bytes() {
+            CborValue::decode(bytes).ok()?
+        } else {
+            val.clone()
+        };
+
+        let name = node_map_val
+            .get("Name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("mixnode")
+            .to_string();
+
+        let layer = node_map_val
+            .get("Layer")
+            .and_then(|v| v.as_u64())
+            .map(|l| l as u8)
+            .unwrap_or(default_layer);
+
+        let mut address = format!("{}:1789", name);
+        if let Some(addrs_map) = node_map_val.get("Addresses").and_then(|v| v.as_map()) {
+            for (_, v) in addrs_map {
+                if let Some(arr) = v.as_array() {
+                    if let Some(first) = arr.first().and_then(|a| a.as_str()) {
+                        address = first.to_string();
+                        break;
+                    }
+                } else if let Some(s) = v.as_str() {
+                    address = s.to_string();
+                    break;
+                }
+            }
+        } else if let Some(s) = node_map_val.get("Address").and_then(|v| v.as_str()) {
+            address = s.to_string();
+        }
+
+        let mut pubkey_bytes: Option<[u8; 32]> = None;
+
+        if let Some(mix_keys) = node_map_val.get("MixKeys").and_then(|v| v.as_map()) {
+            for (k, v) in mix_keys {
+                if let (Some(k_epoch), Some(bytes)) = (k.as_u64(), v.as_bytes()) {
+                    if k_epoch == epoch && bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(bytes);
+                        pubkey_bytes = Some(arr);
+                        break;
+                    }
+                }
+            }
+            if pubkey_bytes.is_none() {
+                for (_, v) in mix_keys {
+                    if let Some(bytes) = v.as_bytes() {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(bytes);
+                            pubkey_bytes = Some(arr);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if pubkey_bytes.is_none() {
+            if let Some(link) = node_map_val.get("LinkKey").and_then(|v| v.as_bytes()) {
+                if link.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(link);
+                    pubkey_bytes = Some(arr);
+                }
+            }
+        }
+
+        if pubkey_bytes.is_none() {
+            if let Some(id_key) = node_map_val.get("IdentityKey").and_then(|v| v.as_bytes()) {
+                if id_key.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(id_key);
+                    pubkey_bytes = Some(arr);
+                }
+            }
+        }
+
+        let key_32 = pubkey_bytes?;
+        let pubkey = PublicKey::from(key_32);
+        Some(MixNodeDescriptor::new(&name, &address, &pubkey, layer))
+    }
+
     pub fn generate_mock_consensus(epoch: u64) -> (Self, Vec<StaticSecret>) {
         let mut nodes = Vec::new();
         let mut privkeys = Vec::new();
@@ -56,9 +196,7 @@ impl ConsensusTopology {
         for layer in 1..=3 {
             for idx in 1..=3 {
                 let mut seed = [0u8; 32];
-                seed[0] = layer;
-                seed[1] = idx;
-                seed[2..10].copy_from_slice(&epoch.to_be_bytes());
+                OsRng.fill_bytes(&mut seed);
                 let privkey = StaticSecret::from(seed);
                 let pubkey = PublicKey::from(&privkey);
                 let id = format!("mix-L{}-N{}", layer, idx);
@@ -209,7 +347,10 @@ impl SphinxEngine {
 
         // Build Payload with reverse multi-layer encryption
         let mut padded_payload = vec![0u8; SPHINX_PAYLOAD_SIZE];
-        let copy_len = message.len().min(SPHINX_PAYLOAD_SIZE - 4);
+        if message.len() > SPHINX_PAYLOAD_SIZE - 4 {
+            return Err("Demo packet payload exceeds capacity".into());
+        }
+        let copy_len = message.len();
         padded_payload[0..4].copy_from_slice(&(copy_len as u32).to_be_bytes());
         padded_payload[4..4 + copy_len].copy_from_slice(&message[..copy_len]);
 
@@ -224,7 +365,10 @@ impl SphinxEngine {
         let mut routing_info = vec![0u8; ROUTING_INFO_SIZE];
         let mut dest_bytes = [0u8; 32];
         let dest_raw = destination.as_bytes();
-        let dest_copy = dest_raw.len().min(32);
+        if dest_raw.len() > 32 {
+            return Err("Demo destination exceeds 32-byte routing field".into());
+        }
+        let dest_copy = dest_raw.len();
         dest_bytes[..dest_copy].copy_from_slice(&dest_raw[..dest_copy]);
 
         for i in (0..NUM_HOPS).rev() {
@@ -311,7 +455,6 @@ pub struct SurbPackage {
     pub surb_id: String,
     pub first_hop_address: String,
     pub header_hex: String,
-    pub k_surb_hex: String,
     pub epoch_expiry: u64,
 }
 
@@ -340,7 +483,7 @@ impl SurbManager {
         OsRng.fill_bytes(&mut surb_id_bytes);
         let surb_id = hex::encode(surb_id_bytes);
 
-        let dummy_payload = vec![0u8; SPHINX_PAYLOAD_SIZE];
+        let dummy_payload = vec![0u8; SPHINX_PAYLOAD_SIZE - 4];
         let packet = SphinxEngine::build_packet(&return_path, client_address, &dummy_payload)?;
 
         self.surb_keys.insert(surb_id.clone(), k_surb);
@@ -349,7 +492,6 @@ impl SurbManager {
             surb_id,
             first_hop_address: return_path[0].address.clone(),
             header_hex: hex::encode(&packet.raw_bytes[0..SPHINX_HEADER_SIZE]),
-            k_surb_hex: hex::encode(k_surb),
             epoch_expiry,
         })
     }
@@ -382,12 +524,76 @@ mod tests {
     }
 
     #[test]
-    fn test_surb_generation() {
-        let (topology, _) = ConsensusTopology::generate_mock_consensus(101);
-        let mut manager = SurbManager::new();
-        let surb = manager.generate_surb(&topology, "client-return-inbox", 1729188000).unwrap();
+    fn demo_packet_rejects_truncation() {
+        let (topology, _) = ConsensusTopology::generate_mock_consensus(103);
+        let path = topology.select_path().unwrap();
+        assert!(SphinxEngine::build_packet(&path, "courier", &vec![0u8; SPHINX_PAYLOAD_SIZE - 3]).is_err());
+        assert!(SphinxEngine::build_packet(&path, &"x".repeat(33), b"hi").is_err());
+    }
 
-        assert_eq!(surb.first_hop_address.starts_with("10.1.1."), true);
-        assert!(manager.get_key(&surb.surb_id).is_some());
+    #[test]
+    fn test_from_pki_document_parsing() {
+        // Construct authentic CBOR PKI Document with 3 layers
+        let epoch = 42u64;
+        let mut layers = Vec::new();
+
+        for layer_idx in 0..3 {
+            let mut layer_nodes = Vec::new();
+            for n_idx in 0..2 {
+                let mut seed = [0u8; 32];
+                OsRng.fill_bytes(&mut seed);
+                let privkey = StaticSecret::from(seed);
+                let pubkey = PublicKey::from(&privkey);
+
+                let node_map = CborValue::Map(vec![
+                    (CborValue::Text("Name".into()), CborValue::Text(format!("node-L{}-{}", layer_idx + 1, n_idx))),
+                    (CborValue::Text("Addresses".into()), CborValue::Map(vec![
+                        (CborValue::Text("tcp".into()), CborValue::Array(vec![
+                            CborValue::Text(format!("192.168.10.{}:1789", (layer_idx + 1) * 10 + n_idx)),
+                        ])),
+                    ])),
+                    (CborValue::Text("MixKeys".into()), CborValue::Map(vec![
+                        (CborValue::UInt(epoch), CborValue::Bytes(pubkey.as_bytes().to_vec())),
+                    ])),
+                ]);
+
+                // Katzenpost embeds raw CBOR bytes for descriptors
+                layer_nodes.push(CborValue::Bytes(node_map.encode()));
+            }
+            layers.push(CborValue::Array(layer_nodes));
+        }
+
+        let pki_doc = CborValue::Map(vec![
+            (CborValue::Text("Epoch".into()), CborValue::UInt(epoch)),
+            (CborValue::Text("Topology".into()), CborValue::Array(layers)),
+        ]);
+
+        let pki_bytes = pki_doc.encode();
+        let topo = ConsensusTopology::from_pki_document(&pki_bytes).expect("Failed to parse valid PKI CBOR");
+        assert_eq!(topo.epoch, epoch);
+        assert_eq!(topo.nodes.len(), 6);
+
+        let path = topo.select_path().expect("Failed to select path from parsed PKI");
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0].layer, 1);
+        assert_eq!(path[1].layer, 2);
+        assert_eq!(path[2].layer, 3);
+
+        // Verify Sphinx packet builds successfully with nodes from PKI
+        let pkt = SphinxEngine::build_packet(&path, "courier", b"PKI Test Message").unwrap();
+        assert_eq!(pkt.raw_bytes.len(), TOTAL_SPHINX_PACKET_SIZE);
+    }
+
+    #[test]
+    fn test_from_pki_document_missing_layer_rejected() {
+        let pki_doc = CborValue::Map(vec![
+            (CborValue::Text("Epoch".into()), CborValue::UInt(1)),
+            (CborValue::Text("Topology".into()), CborValue::Array(vec![
+                CborValue::Array(vec![]), // Layer 1 empty!
+                CborValue::Array(vec![]),
+            ])),
+        ]);
+        let err = ConsensusTopology::from_pki_document(&pki_doc.encode()).unwrap_err();
+        assert!(err.contains("no valid mix nodes") || err.contains("missing mix nodes"));
     }
 }

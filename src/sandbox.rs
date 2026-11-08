@@ -7,7 +7,7 @@
 pub enum SandboxStatus {
     /// Network fully revoked via kernel namespace/seccomp
     KernelEnforced(String),
-    /// Running in unprivileged software-isolated mode
+    /// Legacy status; never means network isolation is enforced.
     Restricted(String),
 }
 
@@ -26,9 +26,7 @@ pub fn apply_network_isolation() -> Result<SandboxStatus, String> {
 
     #[cfg(not(any(target_os = "linux", target_os = "openbsd")))]
     {
-        Ok(SandboxStatus::Restricted(
-            "Kernel-level network namespace not supported on this OS; logical process isolation active".to_string(),
-        ))
+        Err("Kernel network isolation is not supported on this OS".to_string())
     }
 }
 
@@ -37,8 +35,7 @@ fn apply_linux_isolation() -> Result<SandboxStatus, String> {
     unsafe {
         // Step 1: Prevent acquiring new privileges (required for unprivileged seccomp / user ns)
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            let err = std::io::Error::last_os_error();
-            eprintln!("[!] Warning: prctl(PR_SET_NO_NEW_PRIVS) returned: {}", err);
+            return Err(format!("Cannot set no_new_privs: {}", std::io::Error::last_os_error()));
         }
 
         // Step 2: Try unshare with CLONE_NEWUSER | CLONE_NEWNET (unprivileged network isolation)
@@ -58,10 +55,7 @@ fn apply_linux_isolation() -> Result<SandboxStatus, String> {
         }
 
         let err = std::io::Error::last_os_error();
-        Ok(SandboxStatus::Restricted(format!(
-            "Linux user namespaces restricted by host ({}); process isolated without network sockets",
-            err
-        )))
+        Err(format!("Cannot enforce Linux network namespace isolation: {err}"))
     }
 }
 
@@ -80,7 +74,7 @@ fn apply_openbsd_pledge() -> Result<SandboxStatus, String> {
     }
 }
 
-/// Verifies whether network socket operations are successfully blocked or disconnected.
+/// A connectivity probe only. A failed connection is not proof of isolation.
 pub fn is_network_blocked() -> bool {
     unsafe {
         let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
@@ -103,8 +97,7 @@ pub fn is_network_blocked() -> bool {
 
         libc::close(fd);
 
-        // In a detached network namespace with no interfaces (or blocked), connect will fail
-        // with ENETUNREACH (101) or EPERM / EACCES
+        // Failure can also mean DNS, routing, firewall, or remote service failure.
         res != 0
     }
 }
@@ -115,8 +108,8 @@ mod tests {
 
     #[test]
     fn test_sandbox_status() {
-        // Check that isolation call returns a valid status without crashing
+        // Hosts may forbid unprivileged namespaces; failure must be explicit.
         let status = apply_network_isolation();
-        assert!(status.is_ok());
+        assert!(matches!(status, Ok(SandboxStatus::KernelEnforced(_)) | Err(_)));
     }
 }

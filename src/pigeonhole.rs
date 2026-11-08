@@ -1,11 +1,23 @@
-use chacha20::cipher::{KeyIvInit, StreamCipher};
-use chacha20::ChaCha20;
+use argon2::{Algorithm, Argon2, Params, Version};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
+use zeroize::{Zeroize, Zeroizing};
+
+const BOX_WIRE_VERSION: &[u8; 4] = b"KPB2";
+const VAULT_WIRE_VERSION: &[u8; 4] = b"KAV1";
+const VAULT_SALT_SIZE: usize = 16;
+const AEAD_NONCE_SIZE: usize = 24;
+static VAULT_PASSPHRASE: OnceLock<Result<Zeroizing<String>, String>> = OnceLock::new();
 
 pub const BACAP_BOX_ID_SIZE: usize = 32;
 pub const BACAP_SIGNATURE_SIZE: usize = 64;
@@ -104,7 +116,7 @@ impl BoxIdentity {
         Ok(X25519StaticSecret::from(arr))
     }
 
-    /// Sign payload using BLAKE3 keyed hash derived from private key
+    /// Create a local demonstration tag. This is not a verifiable signature.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; BACAP_SIGNATURE_SIZE], String> {
         let priv_bytes = hex::decode(&self.privkey_hex).map_err(|e| e.to_string())?;
         let mut kdf = blake3::Hasher::new_derive_key("katzenpost-bacap-signature-key-v1");
@@ -123,18 +135,17 @@ impl BoxIdentity {
         Ok(sig)
     }
 
-    /// Verify signature for a given box_id
+    /// This demo's X25519 box ID cannot verify a BLAKE3 tag derived from a private key.
+    /// Never accept it as an asymmetric signature.
     pub fn verify_signature(
         _box_id: &[u8; 32],
         _message: &[u8],
         _signature: &[u8; BACAP_SIGNATURE_SIZE],
     ) -> bool {
-        // In local demo model, signature verification is stubbed
-        // (Production uses asymmetric BLAKE3/Ed25519 verification)
-        true
+        false
     }
 
-    /// Encrypt a message payload for a recipient Box ID using ephemeral ECDH + ChaCha20
+    /// Encrypt a local demo payload. This is not the Katzenpost BACAP wire format.
     pub fn encrypt_for_box(&self, recipient_box_id: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
         let mut rng = OsRng;
         let mut eph_seed = [0u8; 32];
@@ -145,63 +156,65 @@ impl BoxIdentity {
         let recip_pub = X25519PublicKey::from(*recipient_box_id);
         let shared_dh = eph_secret.diffie_hellman(&recip_pub);
 
-        let mut kdf = blake3::Hasher::new_derive_key("katzenpost-pigeonhole-box-encrypt-v1");
+        if shared_dh.as_bytes().iter().all(|b| *b == 0) {
+            return Err("Invalid recipient public key".into());
+        }
+        let mut kdf = blake3::Hasher::new_derive_key("katzen-airgapped-box-aead-v2");
         kdf.update(shared_dh.as_bytes());
-        let sym_key = *kdf.finalize().as_bytes();
+        let mut sym_key = *kdf.finalize().as_bytes();
 
-        let mut nonce = [0u8; 12];
+        let mut nonce = [0u8; AEAD_NONCE_SIZE];
         rng.fill_bytes(&mut nonce);
+        let mut aad = Vec::with_capacity(4 + 32 + 32);
+        aad.extend_from_slice(BOX_WIRE_VERSION);
+        aad.extend_from_slice(eph_pub.as_bytes());
+        aad.extend_from_slice(recipient_box_id);
+        let ciphertext = XChaCha20Poly1305::new((&sym_key).into())
+            .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad: &aad })
+            .map_err(|_| "Box encryption failed".to_string());
+        sym_key.zeroize();
+        let ciphertext = ciphertext?;
 
-        let mut ciphertext = plaintext.to_vec();
-        let key = chacha20::Key::from_slice(&sym_key);
-        let chacha_nonce = chacha20::Nonce::from_slice(&nonce);
-        let mut cipher = ChaCha20::new(key, chacha_nonce);
-        cipher.apply_keystream(&mut ciphertext);
-
-        let mac = blake3::keyed_hash(&sym_key, &ciphertext);
-
-        // Result wire: [eph_pub (32B) | nonce (12B) | mac (16B) | ciphertext]
-        let mut out = Vec::with_capacity(32 + 12 + 16 + ciphertext.len());
+        let mut out = Vec::with_capacity(4 + 32 + AEAD_NONCE_SIZE + ciphertext.len());
+        out.extend_from_slice(BOX_WIRE_VERSION);
         out.extend_from_slice(eph_pub.as_bytes());
         out.extend_from_slice(&nonce);
-        out.extend_from_slice(&mac.as_bytes()[0..16]);
         out.extend_from_slice(&ciphertext);
         Ok(out)
     }
 
     /// Decrypt a message addressed to our Box ID
     pub fn decrypt_box_payload(&self, wire: &[u8]) -> Result<Vec<u8>, String> {
-        if wire.len() < 32 + 12 + 16 {
+        if wire.len() < 4 + 32 + AEAD_NONCE_SIZE + 16 || &wire[..4] != BOX_WIRE_VERSION {
             return Err("Encrypted payload too short".to_string());
         }
-        let eph_pub_bytes: [u8; 32] = wire[0..32].try_into().unwrap();
-        let nonce: [u8; 12] = wire[32..44].try_into().unwrap();
-        let expected_mac = &wire[44..60];
+        let eph_pub_bytes: [u8; 32] = wire[4..36].try_into().unwrap();
+        let nonce = &wire[36..60];
         let ciphertext = &wire[60..];
 
         let secret = self.secret()?;
         let eph_pub = X25519PublicKey::from(eph_pub_bytes);
         let shared_dh = secret.diffie_hellman(&eph_pub);
 
-        let mut kdf = blake3::Hasher::new_derive_key("katzenpost-pigeonhole-box-encrypt-v1");
-        kdf.update(shared_dh.as_bytes());
-        let sym_key = *kdf.finalize().as_bytes();
-
-        let mac = blake3::keyed_hash(&sym_key, ciphertext);
-        if &mac.as_bytes()[0..16] != expected_mac {
-            return Err("Pigeonhole MAC verification failed: corrupted or wrong key".to_string());
+        if shared_dh.as_bytes().iter().all(|b| *b == 0) {
+            return Err("Invalid sender ephemeral key".into());
         }
-
-        let mut plaintext = ciphertext.to_vec();
-        let key = chacha20::Key::from_slice(&sym_key);
-        let chacha_nonce = chacha20::Nonce::from_slice(&nonce);
-        let mut cipher = ChaCha20::new(key, chacha_nonce);
-        cipher.apply_keystream(&mut plaintext);
-        Ok(plaintext)
+        let mut kdf = blake3::Hasher::new_derive_key("katzen-airgapped-box-aead-v2");
+        kdf.update(shared_dh.as_bytes());
+        let mut sym_key = *kdf.finalize().as_bytes();
+        let mut aad = Vec::with_capacity(4 + 32 + 32);
+        aad.extend_from_slice(BOX_WIRE_VERSION);
+        aad.extend_from_slice(&eph_pub_bytes);
+        aad.extend_from_slice(&self.box_id()?);
+        let plaintext = XChaCha20Poly1305::new((&sym_key).into())
+            .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad: &aad })
+            .map_err(|_| "Box authentication failed: corrupted payload or wrong key".to_string());
+        sym_key.zeroize();
+        plaintext
     }
 }
 
-/// Katzenpost BACAP ReplicaWrite message (Deposit)
+/// Local demonstration deposit format, not the Katzenpost BACAP wire format.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplicaWrite {
     pub box_id: [u8; BACAP_BOX_ID_SIZE],
@@ -379,11 +392,133 @@ pub struct VaultMailbox {
     pub messages: Vec<MailboxMessage>,
 }
 
+pub fn set_cached_vault_passphrase(passphrase: &str) -> Result<(), String> {
+    if passphrase.chars().count() < 8 {
+        return Err("Vault passphrase must contain at least 8 characters".into());
+    }
+    let _ = VAULT_PASSPHRASE.set(Ok(Zeroizing::new(passphrase.to_string())));
+    Ok(())
+}
+
+pub fn is_vault_passphrase_cached() -> bool {
+    VAULT_PASSPHRASE.get().is_some()
+}
+
+fn vault_passphrase(confirm_new: bool) -> Result<&'static str, String> {
+    VAULT_PASSPHRASE
+        .get_or_init(|| {
+            let value = rpassword::prompt_password("Vault passphrase: ")
+                .map_err(|e| format!("A terminal is required to unlock the vault: {e}"))?;
+            if value.chars().count() < 12 {
+                return Err("Vault passphrase must contain at least 12 characters".into());
+            }
+            if confirm_new {
+                let confirmation = rpassword::prompt_password("Confirm new vault passphrase: ")
+                    .map_err(|e| format!("Cannot confirm vault passphrase: {e}"))?;
+                if value != confirmation {
+                    return Err("Vault passphrases did not match".into());
+                }
+            }
+            Ok(Zeroizing::new(value))
+        })
+        .as_ref()
+        .map(|s| s.as_str())
+        .map_err(Clone::clone)
+}
+
+fn vault_cipher(passphrase: &str, salt: &[u8]) -> Result<XChaCha20Poly1305, String> {
+    let params = Params::new(64 * 1024, 3, 1, None).map_err(|e| e.to_string())?;
+    let kdf = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0u8; 32];
+    kdf.hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|e| format!("Vault key derivation failed: {e}"))?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    key.zeroize();
+    Ok(cipher)
+}
+
+fn encrypt_mailbox(mailbox: &VaultMailbox, passphrase: &str) -> Result<Vec<u8>, String> {
+    let mut salt = [0u8; VAULT_SALT_SIZE];
+    let mut nonce = [0u8; AEAD_NONCE_SIZE];
+    OsRng.fill_bytes(&mut salt);
+    OsRng.fill_bytes(&mut nonce);
+    let mut plaintext = serde_json::to_vec(mailbox).map_err(|e| e.to_string())?;
+    let encrypted = vault_cipher(passphrase, &salt)?
+        .encrypt(XNonce::from_slice(&nonce), Payload { msg: &plaintext, aad: VAULT_WIRE_VERSION })
+        .map_err(|_| "Vault encryption failed".to_string());
+    plaintext.zeroize();
+    let encrypted = encrypted?;
+    let mut out = Vec::with_capacity(4 + VAULT_SALT_SIZE + AEAD_NONCE_SIZE + encrypted.len());
+    out.extend_from_slice(VAULT_WIRE_VERSION);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&encrypted);
+    Ok(out)
+}
+
+fn decrypt_mailbox(wire: &[u8], passphrase: &str) -> Result<VaultMailbox, String> {
+    if wire.len() < 4 + VAULT_SALT_SIZE + AEAD_NONCE_SIZE + 16 || !wire.starts_with(VAULT_WIRE_VERSION) {
+        return Err("Invalid encrypted vault header".into());
+    }
+    let salt = &wire[4..20];
+    let nonce = &wire[20..44];
+    let ciphertext = &wire[44..];
+    let mut plaintext = vault_cipher(passphrase, salt)?
+        .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad: VAULT_WIRE_VERSION })
+        .map_err(|_| "Vault authentication failed: wrong passphrase or damaged file".to_string())?;
+    let mailbox = serde_json::from_slice(&plaintext).map_err(|e| format!("Invalid vault contents: {e}"));
+    plaintext.zeroize();
+    mailbox
+}
+
+pub fn write_private_atomic(path: &Path, data: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("Vault path has no parent directory")?;
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)
+        .map_err(|e| format!("Cannot create private directory: {e}"))?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("Cannot restrict vault directory: {e}"))?;
+    let mut random = [0u8; 8];
+    OsRng.fill_bytes(&mut random);
+    let temp = parent.join(format!(".vault-{}.tmp", hex::encode(random)));
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
+        .open(&temp).map_err(|e| format!("Cannot create private vault temp file: {e}"))?;
+    let write_result = file.write_all(data).and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Cannot write encrypted vault: {e}"));
+    }
+    if let Err(e) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Cannot replace vault atomically: {e}"));
+    }
+    let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+    Ok(())
+}
+
 impl VaultMailbox {
     pub fn new_or_load(storage_path: &Path) -> Result<Self, String> {
+        Self::load_with_passphrase(storage_path, vault_passphrase(!storage_path.exists())?)
+    }
+
+    pub fn load_with_passphrase(storage_path: &Path, passphrase: &str) -> Result<Self, String> {
+        if storage_path.is_symlink() {
+            return Err("Vault path must not be a symbolic link".into());
+        }
         if storage_path.exists() {
-            let data = fs::read_to_string(storage_path).map_err(|e| format!("Failed to read mailbox file: {}", e))?;
-            let mailbox: VaultMailbox = serde_json::from_str(&data).map_err(|e| format!("Invalid mailbox format: {}", e))?;
+            let data = Zeroizing::new(fs::read(storage_path)
+                .map_err(|e| format!("Failed to read mailbox file: {}", e))?);
+            let mailbox = if data.starts_with(VAULT_WIRE_VERSION) {
+                decrypt_mailbox(&data, passphrase)?
+            } else if data.first() == Some(&b'{') {
+                // One-time migration; atomic replacement leaves the old file intact on error.
+                let legacy: VaultMailbox = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Invalid legacy mailbox format: {}", e))?;
+                legacy.save_with_passphrase(storage_path, passphrase)?;
+                legacy
+            } else {
+                return Err("Unknown vault format".into());
+            };
             Ok(mailbox)
         } else {
             let identity = BoxIdentity::generate("sovereign-operator");
@@ -392,19 +527,16 @@ impl VaultMailbox {
                 contacts: Vec::new(),
                 messages: Vec::new(),
             };
-            if let Some(parent) = storage_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            mailbox.save(storage_path)?;
+            mailbox.save_with_passphrase(storage_path, passphrase)?;
             Ok(mailbox)
         }
     }
 
     pub fn add_contact(&mut self, username: &str, box_id_hex: &str) -> Result<ContactProfile, String> {
         let trimmed_hex = box_id_hex.trim();
-        let bytes = hex::decode(trimmed_hex).map_err(|e| format!("Hex non valido: {}", e))?;
+        let bytes = hex::decode(trimmed_hex).map_err(|e| format!("Invalid hex: {}", e))?;
         if bytes.len() != 32 {
-            return Err("Il Box ID del contatto deve essere esattamente di 32 byte (64 caratteri hex)".to_string());
+            return Err("Contact Box ID must be exactly 32 bytes (64 hex characters)".to_string());
         }
         let profile = ContactProfile::new(username, trimmed_hex);
         self.contacts.retain(|c| !c.box_id_hex.eq_ignore_ascii_case(trimmed_hex));
@@ -417,9 +549,15 @@ impl VaultMailbox {
     }
 
     pub fn save(&self, storage_path: &Path) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        fs::write(storage_path, json).map_err(|e| format!("Failed to write mailbox file: {}", e))?;
-        Ok(())
+        self.save_with_passphrase(storage_path, vault_passphrase(!storage_path.exists())?)
+    }
+
+    pub fn save_with_passphrase(&self, storage_path: &Path, passphrase: &str) -> Result<(), String> {
+        if storage_path.is_symlink() {
+            return Err("Vault path must not be a symbolic link".into());
+        }
+        let encrypted = encrypt_mailbox(self, passphrase)?;
+        write_private_atomic(storage_path, &encrypted)
     }
 
     pub fn deposit_draft(
@@ -497,9 +635,42 @@ impl VaultMailbox {
     }
 }
 
+/// Resolves the portable USB / application root directory relative to the running binary.
+/// Ensures keys and spools stay on the USB stick rather than polluting the host PC's $HOME.
+pub fn portable_root_dir() -> PathBuf {
+    if let Ok(custom) = std::env::var("KATZEN_HOME") {
+        return PathBuf::from(custom);
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // If running from <root>/target/release/katzen or <root>/target/debug/katzen
+            if let Some(parent) = exe_dir.parent() {
+                if parent.file_name().and_then(|s| s.to_str()) == Some("target") {
+                    if let Some(project_root) = parent.parent() {
+                        return project_root.to_path_buf();
+                    }
+                }
+            }
+            // If running from <root>/bin/katzen
+            if exe_dir.file_name().and_then(|s| s.to_str()) == Some("bin") {
+                if let Some(bundle_root) = exe_dir.parent() {
+                    return bundle_root.to_path_buf();
+                }
+            }
+            return exe_dir.to_path_buf();
+        }
+    }
+
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+pub fn default_spool_dir() -> PathBuf {
+    portable_root_dir().join("spool")
+}
+
 pub fn default_vault_mailbox_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".katzen").join("vault_mailbox.json")
+    portable_root_dir().join("vault_data").join("vault_mailbox.json")
 }
 
 #[cfg(test)]
@@ -516,6 +687,51 @@ mod tests {
         let decrypted = bob.decrypt_box_payload(&encrypted).unwrap();
 
         assert_eq!(decrypted, message);
+    }
+
+    #[test]
+    fn test_box_envelope_authenticates_every_field() {
+        let alice = BoxIdentity::generate("alice");
+        let bob = BoxIdentity::generate("bob");
+        let wire = alice.encrypt_for_box(&bob.box_id().unwrap(), b"private payload").unwrap();
+        for offset in [0, 4, 35, 36, 59, 60, wire.len() - 1] {
+            let mut tampered = wire.clone();
+            tampered[offset] ^= 1;
+            assert!(bob.decrypt_box_payload(&tampered).is_err(), "tamper at {offset} accepted");
+        }
+        assert!(alice.decrypt_box_payload(&wire).is_err());
+        assert!(alice.encrypt_for_box(&[0u8; 32], b"x").is_err());
+        assert!(!BoxIdentity::verify_signature(&bob.box_id().unwrap(), b"x", &[0u8; 64]));
+    }
+
+    #[test]
+    fn test_vault_encryption_and_private_atomic_file() {
+        let mailbox = VaultMailbox { identity: BoxIdentity::generate("test"), contacts: vec![], messages: vec![] };
+        let encrypted = encrypt_mailbox(&mailbox, "correct horse battery staple").unwrap();
+        assert!(encrypted.starts_with(VAULT_WIRE_VERSION));
+        assert!(!encrypted.windows(mailbox.identity.privkey_hex.len()).any(|w| w == mailbox.identity.privkey_hex.as_bytes()));
+        assert_eq!(decrypt_mailbox(&encrypted, "correct horse battery staple").unwrap().identity.box_id_hex, mailbox.identity.box_id_hex);
+        assert!(decrypt_mailbox(&encrypted, "incorrect passphrase").is_err());
+        for offset in [4, 20, 44, encrypted.len() - 1] {
+            let mut tampered = encrypted.clone();
+            tampered[offset] ^= 1;
+            assert!(decrypt_mailbox(&tampered, "correct horse battery staple").is_err());
+        }
+        let mut id = [0u8; 8];
+        OsRng.fill_bytes(&mut id);
+        let dir = std::env::temp_dir().join(format!("katzen-vault-test-{}", hex::encode(id)));
+        let file = dir.join("vault.bin");
+        write_private_atomic(&file, &encrypted).unwrap();
+        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(fs::read(&file).unwrap().starts_with(VAULT_WIRE_VERSION));
+        let legacy = dir.join("legacy.json");
+        fs::write(&legacy, serde_json::to_vec(&mailbox).unwrap()).unwrap();
+        let migrated = VaultMailbox::load_with_passphrase(&legacy, "correct horse battery staple").unwrap();
+        assert_eq!(migrated.identity.box_id_hex, mailbox.identity.box_id_hex);
+        assert!(fs::read(&legacy).unwrap().starts_with(VAULT_WIRE_VERSION));
+        assert_eq!(fs::metadata(&legacy).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

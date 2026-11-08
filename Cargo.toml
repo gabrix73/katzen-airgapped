@@ -3,7 +3,7 @@ name = "katzen-airgapped"
 version = "0.1.0"
 edition = "2021"
 authors = ["Gabriel Virebent <gabrix73>"]
-description = "Air-gapped Sphinx packet & SURB generation client architecture for Katzenpost"
+description = "Experimental offline QR workflow and encrypted local vault for Katzenpost research"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -16,6 +16,10 @@ rand = "0.8"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 chacha20 = "0.9"
 poly1305 = "0.8"
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+zeroize = "1.9"
+rpassword = "7"
 libc = "0.2"
 slint = { version = "1.18.1", features = ["compat-1-2"] }
 
