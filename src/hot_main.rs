@@ -49,6 +49,25 @@ enum Commands {
         spool_dir: PathBuf,
     },
 
+    /// Ingest acoustic air-gap stream directly from microphone via ggwave
+    Listen {
+        /// Optional path to kpclientd Unix domain socket
+        #[arg(short, long, default_value = "/run/katzenpost/client.sock")]
+        socket: PathBuf,
+
+        /// Optional TCP endpoint for kpclientd
+        #[arg(short, long)]
+        tcp: Option<String>,
+
+        /// Directory to spool outbound Sphinx packets if daemon is offline
+        #[arg(long, default_value = "/tmp/katzen-hot-spool")]
+        spool_dir: PathBuf,
+
+        /// Timeout in seconds waiting for an audio chunk (default 20s)
+        #[arg(long, default_value_t = 20)]
+        timeout_secs: u64,
+    },
+
     /// Encapsulate a received mixnet response into a QR code for the Cold Terminal to scan
     SendReply {
         /// Plaintext or raw encrypted reply bytes from mixnet
@@ -58,6 +77,10 @@ enum Commands {
         /// Sequence ID to correlate
         #[arg(short, long, default_value_t = 1001)]
         seq_id: u32,
+
+        /// Transmit reply over sound via ggwave acoustic modulation
+        #[arg(long, default_value_t = false)]
+        sound: bool,
     },
 }
 
@@ -279,7 +302,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = child.kill();
         }
 
-        Commands::SendReply { data, seq_id } => {
+        Commands::Listen {
+            socket,
+            tcp,
+            spool_dir,
+            timeout_secs,
+        } => {
+            println!("=======================================================");
+            println!(" KATZENPOST HOT STATION: ACOUSTIC GGWAVE RECEIVER ");
+            println!("=======================================================");
+            println!("Listening on microphone for acoustic air-gap transmission...");
+            println!("Hold speaker of Cold Terminal near this microphone.\n");
+
+            match katzen_airgapped::audio::listen_for_message(
+                ggwave::Protocol::AudibleFast,
+                std::time::Duration::from_secs(timeout_secs),
+            ) {
+                Ok((msg_type, seq_id, payload)) => {
+                    forward_or_spool_packet(
+                        seq_id,
+                        msg_type,
+                        &payload,
+                        &socket,
+                        tcp.as_deref(),
+                        &spool_dir,
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[-] Acoustic reception failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::SendReply { data, seq_id, sound } => {
+            if sound {
+                println!("=======================================================");
+                println!(" KATZENPOST HOT STATION: BROADCASTING REPLY OVER SOUND ");
+                println!("=======================================================");
+                katzen_airgapped::audio::transmit_message(
+                    MsgType::ReplyIn,
+                    seq_id,
+                    data.as_bytes(),
+                    katzen_airgapped::audio::DEFAULT_AUDIO_CHUNK_SIZE,
+                    ggwave::Protocol::AudibleFast,
+                    katzen_airgapped::audio::DEFAULT_AUDIO_VOLUME,
+                    150,
+                )?;
+                println!("Acoustic reply broadcast complete.");
+                return Ok(());
+            }
+
             let chunks = fragment_payload(
                 MsgType::ReplyIn,
                 seq_id,

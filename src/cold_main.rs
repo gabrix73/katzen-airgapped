@@ -45,6 +45,14 @@ enum Commands {
         /// Output raw QR strings instead of terminal graphics
         #[arg(long, default_value_t = false)]
         raw: bool,
+
+        /// Broadcast packet over sound using ggwave acoustic modulation
+        #[arg(long, default_value_t = false)]
+        sound: bool,
+
+        /// Sound transmission volume (0-100, default 25)
+        #[arg(long, default_value_t = 25)]
+        volume: u8,
     },
 
     /// Generate an offline SURB delegation token for Pigeonhole mailbox polling
@@ -78,6 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             loops,
             step,
             raw,
+            sound,
+            volume,
         } => {
             let payload_bytes = if let Some(msg) = message {
                 msg.into_bytes()
@@ -114,6 +124,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &sphinx_packet.raw_bytes,
                 DEFAULT_CHUNK_SIZE,
             )?;
+
+            if sound {
+                println!("Acoustic Mode: broadcasting Sphinx packet over sound via ggwave...");
+                katzen_airgapped::audio::transmit_message(
+                    MsgType::SphinxOut,
+                    seq_id,
+                    &sphinx_packet.raw_bytes,
+                    katzen_airgapped::audio::DEFAULT_AUDIO_CHUNK_SIZE,
+                    ggwave::Protocol::AudibleFast,
+                    volume,
+                    delay_ms,
+                ).map_err(|e| format!("Acoustic transmission error: {}", e))?;
+                println!("Acoustic broadcast completed successfully.");
+                return Ok(());
+            }
 
             if raw {
                 for (i, chunk) in chunks.iter().enumerate() {

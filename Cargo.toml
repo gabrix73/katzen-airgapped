@@ -22,6 +22,8 @@ zeroize = "1.9"
 rpassword = "7"
 libc = "0.2"
 slint = { version = "1.18.1", features = ["compat-1-2"] }
+cpal = "0.17.3"
+ggwave = { git = "https://github.com/katzenpost/ggwave-rs", rev = "444a3cdaf75769f4ac245e1f903f0a5346ab9ab6", version = "0.1.0" }
 
 [[bin]]
 name = "katzen"

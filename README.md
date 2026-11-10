@@ -20,9 +20,11 @@ The current repository review and release blockers are in [docs/REVIEW_2026-10-3
 cargo test --locked
 katzen status
 katzen-cold send --message test --raw
+katzen-cold send --message test --sound
+katzen-hot listen
 ```
 
-The QR path can be tested on one machine with synthetic data. A two-device test should use a dedicated offline laptop for the cold side, with radios and Ethernet disabled, and an online machine for the hot side. Treat every QR or removable-media import as untrusted input. Android airplane mode is useful for interface experiments but is not the reference air-gap configuration because Wi-Fi and Bluetooth can remain enabled.
+The QR and acoustic paths can be tested on one machine with synthetic data. A two-device test should use a dedicated offline laptop for the cold side, with radios and Ethernet disabled, and an online machine for the hot side. Treat every QR, audio burst, or removable-media import as untrusted input. Android airplane mode is useful for interface experiments but is not the reference air-gap configuration because Wi-Fi and Bluetooth can remain enabled.
 
 ## Verification & Live Delivery Architecture
 
@@ -30,3 +32,4 @@ The QR path can be tested on one machine with synthetic data. A two-device test 
 2. **Wire Contract Dispatch**: `katzen-hot` reassembles air-gap chunks (`KPAG`), binds to `kpclientd` via Unix domain or abstract socket (`@katzenpost`), submits thin-client CBOR frames, and verifies `MessageSentEvent` delivery receipts.
 3. **Durable Deferred Spooling**: When network connectivity or local mixnet daemons are unavailable, packets are saved with private permissions (`0o600`) to `spool/outbox/` for queueing.
 4. **Native GUI Unlock Flow**: Slint desktop interface features in-window Argon2id decryption, password masking, on-screen key scrambling, and non-blocking initialization.
+5. **Acoustic Out-of-Band Channel**: Support for `ggwave` FSK audio modulation over physical speakers and microphones (`katzen-cold send --sound` and `katzen-hot listen`), enabling air-gap data transfer on camera-less or headless hardware.

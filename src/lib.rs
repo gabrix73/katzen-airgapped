@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+pub mod audio;
 pub mod identicon;
 pub mod pigeonhole;
 pub mod sandbox;
